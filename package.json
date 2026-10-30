@@ -1,0 +1,51 @@
+
+{
+  "name": "secure-user-management-api",
+  "version": "1.0.0",
+  "description": "Production-ready NodeJS Express backend for User Management with End-to-End Security, Authentication, and RBAC",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "seed": "node scripts/seed.js",
+    "test:health": "node -e \"fetch('http://localhost:5000/api/v1/health').then(r=>r.json()).then(console.log).catch(console.error)\""
+  },
+  "keywords": [
+    "nodejs",
+    "express",
+    "authentication",
+    "authorization",
+    "rbac",
+    "jwt",
+    "security",
+    "user-management",
+    "helmet",
+    "rate-limit",
+    "zod"
+  ],
+  "author": "Engineering Team",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "hpp": "^0.2.3",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "winston": "^3.17.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.1.9"
+  }
+}
