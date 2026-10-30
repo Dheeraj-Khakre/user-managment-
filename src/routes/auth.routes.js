@@ -1,7 +1,7 @@
 /**
  * @file auth.routes.js
  * @description Authentication routing layer configuring rate limiting, validation schemas,
- * and controller endpoints.
+ * MFA endpoints, and controller actions.
  */
 
 const express = require('express');
@@ -16,6 +16,9 @@ const {
   changePasswordSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  mfaLoginStep2Schema,
+  verifyMfaSchema,
+  disableMfaSchema,
 } = require('../validators/auth.validator');
 
 const router = express.Router();
@@ -28,8 +31,16 @@ router.post('/logout', authController.logout);
 router.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), authController.forgotPassword);
 router.post('/reset-password', authLimiter, validate(resetPasswordSchema), authController.resetPassword);
 
+// MFA Login Challenge Step 2
+router.post('/mfa/login-step2', authLimiter, validate(mfaLoginStep2Schema), authController.verifyMfaLogin);
+
 // Protected routes requiring valid JWT access token
 router.get('/me', authenticate, authController.getMe);
 router.post('/change-password', authenticate, validate(changePasswordSchema), authController.changePassword);
+
+// MFA Management (Authenticated)
+router.post('/mfa/setup', authenticate, authController.setupMfa);
+router.post('/mfa/verify', authenticate, validate(verifyMfaSchema), authController.verifyMfa);
+router.post('/mfa/disable', authenticate, validate(disableMfaSchema), authController.disableMfa);
 
 module.exports = router;

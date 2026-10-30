@@ -17,6 +17,7 @@ logs/
 *.log
 data/users.json
 data/tokens.json
+data/*.db*
 
 # Keep directory structure
 !data/.gitkeep

@@ -1,12 +1,13 @@
 /**
  * @file server.js
  * @description HTTP server entry point handling startup lifecycle, port binding,
- * unhandled exceptions, and graceful process shutdown.
+ * SQLite initialization, unhandled exceptions, and graceful process shutdown.
  */
 
 const http = require('http');
 const app = require('./app');
 const envConfig = require('./config/env.config');
+const { getDatabase, closeDatabase } = require('./db/sqlite');
 const logger = require('./utils/logger');
 
 // Catch any synchronous uncaught errors before startup
@@ -15,11 +16,15 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
+// Initialize SQLite Database schema
+getDatabase();
+
 const server = http.createServer(app);
 
 server.listen(envConfig.PORT, () => {
   logger.info(`🚀 Server running in [${envConfig.NODE_ENV}] mode on http://${envConfig.HOST}:${envConfig.PORT}`);
-  logger.info(`🛡️  Security layers initialized: Helmet, CORS, RateLimiting, HPP, Zod Validation`);
+  logger.info(`📖 Swagger UI documentation available at: http://${envConfig.HOST}:${envConfig.PORT}/api-docs`);
+  logger.info(`🛡️  Security layers initialized: Helmet, CORS, RateLimiting, HPP, Zod, SQLite DB`);
   logger.info(`🔍 Health check available at: http://${envConfig.HOST}:${envConfig.PORT}/api/v1/health`);
 });
 
@@ -29,23 +34,23 @@ process.on('unhandledRejection', (reason, promise) => {
     message: reason?.message || String(reason),
     stack: reason?.stack || null,
   });
-  // Graceful shutdown after finishing current request
   server.close(() => {
+    closeDatabase();
     process.exit(1);
   });
 });
 
 /**
- * Graceful termination handler for SIGINT (Ctrl+C) and SIGTERM (container shutdown)
+ * Graceful termination handler for SIGINT and SIGTERM
  */
 const gracefulShutdown = (signal) => {
   logger.info(`Received ${signal}. Initiating graceful shutdown...`);
   server.close(() => {
-    logger.info('HTTP server closed. Exiting process safely.');
+    closeDatabase();
+    logger.info('HTTP server and SQLite database connection closed safely.');
     process.exit(0);
   });
 
-  // Force exit after 10 seconds if hanging connections persist
   setTimeout(() => {
     logger.error('Forced shutdown invoked due to hung connections.');
     process.exit(1);

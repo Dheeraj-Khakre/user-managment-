@@ -1,83 +1,71 @@
 /**
  * @file user.repository.js
- * @description Data access layer for User entities with thread-safe atomic file persistence.
- * Follows the repository pattern so it can easily be swapped with MongoDB (Mongoose),
- * PostgreSQL (Prisma/TypeORM), or any SQL engine.
+ * @description SQLite Data Access Object for User entities.
+ * Uses prepared statements to guarantee complete immunity against SQL Injection attacks.
  */
 
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
-const envConfig = require('../config/env.config');
-const logger = require('../utils/logger');
+const { getDatabase } = require('../db/sqlite');
 
 class UserRepository {
   constructor() {
-    this.dataDir = path.resolve(process.cwd(), envConfig.DATA_DIR);
-    this.filePath = path.join(this.dataDir, 'users.json');
-    this._initializeStorage();
+    this._db = null;
   }
 
   /**
-   * Initializes data directory and empty users.json file if not present.
+   * Returns active database instance.
    * @private
+   * @returns {import('node:sqlite').DatabaseSync}
    */
-  _initializeStorage() {
-    if (!fs.existsSync(this.dataDir)) {
-      fs.mkdirSync(this.dataDir, { recursive: true });
+  get db() {
+    if (!this._db) {
+      this._db = getDatabase();
     }
-    if (!fs.existsSync(this.filePath)) {
-      this._atomicWriteFileSync([]);
-    }
+    return this._db;
   }
 
   /**
-   * Reads all users from disk synchronously.
-   * @private
-   * @returns {Array<Object>}
+   * Sets custom database instance (e.g. for testing in-memory isolation).
+   * @param {import('node:sqlite').DatabaseSync} customDb
    */
-  _readAll() {
-    try {
-      const content = fs.readFileSync(this.filePath, 'utf8');
-      return JSON.parse(content || '[]');
-    } catch (error) {
-      logger.error('Failed to read users database file:', error);
-      return [];
-    }
+  setDatabase(customDb) {
+    this._db = customDb;
   }
 
   /**
-   * Writes all users atomically using a temporary file to avoid corruption on crash.
-   * @private
-   * @param {Array<Object>} data
-   */
-  _atomicWriteFileSync(data) {
-    const tempPath = `${this.filePath}.${crypto.randomUUID()}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
-    fs.renameSync(tempPath, this.filePath);
-  }
-
-  /**
-   * Strips sensitive properties such as password hash from user object.
+   * Sanitizes user record for API output:
+   * Strips password hash and MFA secret, casts integer booleans to true/false.
    * @param {Object} user
-   * @returns {Object}
+   * @returns {Object|null}
    */
   sanitizeUser(user) {
     if (!user) return null;
-    const { password, ...safeUser } = user;
-    return safeUser;
+    const { password, mfaSecret, passwordResetToken, ...safeUser } = user;
+    return {
+      ...safeUser,
+      isEmailVerified: Boolean(safeUser.isEmailVerified),
+      isDeleted: Boolean(safeUser.isDeleted),
+      mfaEnabled: Boolean(safeUser.mfaEnabled),
+    };
   }
 
   /**
-   * Finds all users with filtering, searching, sorting, and pagination.
+   * Formats raw SQL row to standard model object.
+   * @private
+   */
+  _mapRow(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      isEmailVerified: Boolean(row.isEmailVerified),
+      isDeleted: Boolean(row.isDeleted),
+      mfaEnabled: Boolean(row.mfaEnabled),
+    };
+  }
+
+  /**
+   * Finds all users with filtering, sorting, and pagination.
    * @param {Object} queryOptions
-   * @param {number} [queryOptions.page=1]
-   * @param {number} [queryOptions.limit=10]
-   * @param {string} [queryOptions.search='']
-   * @param {string} [queryOptions.role]
-   * @param {string} [queryOptions.status]
-   * @param {string} [queryOptions.sortBy='createdAt']
-   * @param {'asc'|'desc'} [queryOptions.sortOrder='desc']
    * @returns {Promise<{ users: Array<Object>, total: number, page: number, totalPages: number }>}
    */
   async findAll({
@@ -89,50 +77,51 @@ class UserRepository {
     sortBy = 'createdAt',
     sortOrder = 'desc',
   } = {}) {
-    let users = this._readAll();
+    const conditions = ['isDeleted = 0'];
+    const params = [];
 
-    // Filter out soft-deleted users
-    users = users.filter((u) => !u.isDeleted);
-
-    // Filter by role
     if (role) {
-      users = users.filter((u) => u.role === role);
+      conditions.push('role = ?');
+      params.push(role);
     }
 
-    // Filter by status (active, suspended, pending)
     if (status) {
-      users = users.filter((u) => u.status === status);
+      conditions.push('status = ?');
+      params.push(status);
     }
 
-    // Search query on name, email
     if (search && search.trim() !== '') {
-      const searchLower = search.trim().toLowerCase();
-      users = users.filter(
-        (u) =>
-          u.name.toLowerCase().includes(searchLower) ||
-          u.email.toLowerCase().includes(searchLower)
-      );
+      conditions.push('(name LIKE ? OR email LIKE ?)');
+      const searchPattern = `%${search.trim()}%`;
+      params.push(searchPattern, searchPattern);
     }
 
-    // Sorting
-    users.sort((a, b) => {
-      let valA = a[sortBy] ?? '';
-      let valB = b[sortBy] ?? '';
+    const whereClause = conditions.join(' AND ');
 
-      if (typeof valA === 'string') valA = valA.toLowerCase();
-      if (typeof valB === 'string') valB = valB.toLowerCase();
+    // Safe sorting column whitelist
+    const allowedSortColumns = ['createdAt', 'name', 'email', 'role', 'status', 'updatedAt'];
+    const safeSortBy = allowedSortColumns.includes(sortBy) ? sortBy : 'createdAt';
+    const safeSortOrder = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-      if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
-      if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
-      return 0;
-    });
+    // Count query
+    const countSql = `SELECT COUNT(*) as total FROM users WHERE ${whereClause}`;
+    const countStmt = this.db.prepare(countSql);
+    const countResult = countStmt.get(...params);
+    const total = countResult ? countResult.total : 0;
 
-    const total = users.length;
-    const startIndex = (page - 1) * limit;
-    const paginated = users.slice(startIndex, startIndex + limit);
+    // Paginated select query
+    const offset = (page - 1) * limit;
+    const selectSql = `
+      SELECT * FROM users
+      WHERE ${whereClause}
+      ORDER BY ${safeSortBy} ${safeSortOrder}
+      LIMIT ? OFFSET ?
+    `;
+    const selectStmt = this.db.prepare(selectSql);
+    const rows = selectStmt.all(...params, limit, offset);
 
     return {
-      users: paginated.map(this.sanitizeUser),
+      users: rows.map(this.sanitizeUser),
       total,
       page: Number(page),
       limit: Number(limit),
@@ -141,21 +130,21 @@ class UserRepository {
   }
 
   /**
-   * Finds a user by ID.
+   * Finds user by ID.
    * @param {string} id
    * @param {Object} [options]
    * @param {boolean} [options.includePassword=false]
    * @returns {Promise<Object|null>}
    */
   async findById(id, { includePassword = false } = {}) {
-    const users = this._readAll();
-    const user = users.find((u) => u.id === id && !u.isDeleted);
-    if (!user) return null;
-    return includePassword ? { ...user } : this.sanitizeUser(user);
+    const stmt = this.db.prepare('SELECT * FROM users WHERE id = ? AND isDeleted = 0');
+    const row = stmt.get(id);
+    if (!row) return null;
+    return includePassword ? this._mapRow(row) : this.sanitizeUser(row);
   }
 
   /**
-   * Finds a user by email (case-insensitive).
+   * Finds user by email (case-insensitive via SQLite COLLATE NOCASE).
    * @param {string} email
    * @param {Object} [options]
    * @param {boolean} [options.includePassword=false]
@@ -163,95 +152,218 @@ class UserRepository {
    */
   async findByEmail(email, { includePassword = false } = {}) {
     if (!email) return null;
-    const normalizedEmail = email.trim().toLowerCase();
-    const users = this._readAll();
-    const user = users.find(
-      (u) => u.email.toLowerCase() === normalizedEmail && !u.isDeleted
-    );
-    if (!user) return null;
-    return includePassword ? { ...user } : this.sanitizeUser(user);
+    const stmt = this.db.prepare('SELECT * FROM users WHERE email = ? AND isDeleted = 0');
+    const row = stmt.get(email.trim().toLowerCase());
+    if (!row) return null;
+    return includePassword ? this._mapRow(row) : this.sanitizeUser(row);
   }
 
   /**
-   * Creates a new user record.
+   * Finds user by active password reset token.
+   * @param {string} hashedToken
+   * @returns {Promise<Object|null>}
+   */
+  async findByResetToken(hashedToken) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM users
+      WHERE passwordResetToken = ? AND isDeleted = 0
+    `);
+    const row = stmt.get(hashedToken);
+    return row ? this._mapRow(row) : null;
+  }
+
+  /**
+   * Creates a new user record in SQLite.
    * @param {Object} userData
    * @returns {Promise<Object>}
    */
   async create(userData) {
-    const users = this._readAll();
     const now = new Date().toISOString();
+    const id = crypto.randomUUID();
 
-    const newUser = {
-      id: crypto.randomUUID(),
-      name: userData.name.trim(),
-      email: userData.email.trim().toLowerCase(),
-      password: userData.password, // Pre-hashed by service layer
-      role: userData.role || 'USER',
-      status: userData.status || 'ACTIVE',
-      bio: userData.bio || '',
-      isEmailVerified: userData.isEmailVerified || false,
-      isDeleted: false,
-      lastLoginAt: null,
-      passwordChangedAt: null,
-      passwordResetToken: null,
-      passwordResetExpires: null,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const stmt = this.db.prepare(`
+      INSERT INTO users (
+        id, name, email, password, role, status, bio,
+        isEmailVerified, isDeleted, failedLoginAttempts, lockUntil,
+        mfaEnabled, mfaSecret, createdAt, updatedAt
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?,
+        ?, 0, 0, NULL,
+        ?, ?, ?, ?
+      )
+    `);
 
-    users.push(newUser);
-    this._atomicWriteFileSync(users);
-    return this.sanitizeUser(newUser);
+    stmt.run(
+      id,
+      userData.name.trim(),
+      userData.email.trim().toLowerCase(),
+      userData.password,
+      userData.role || 'USER',
+      userData.status || 'ACTIVE',
+      userData.bio || '',
+      userData.isEmailVerified ? 1 : 0,
+      userData.mfaEnabled ? 1 : 0,
+      userData.mfaSecret || null,
+      now,
+      now
+    );
+
+    return this.findById(id);
   }
 
   /**
-   * Updates an existing user by ID.
+   * Updates an existing user record.
    * @param {string} id
    * @param {Object} updateData
    * @returns {Promise<Object|null>}
    */
   async update(id, updateData) {
-    const users = this._readAll();
-    const index = users.findIndex((u) => u.id === id && !u.isDeleted);
-    if (index === -1) return null;
+    const fields = [];
+    const params = [];
 
-    const existingUser = users[index];
-    const updatedUser = {
-      ...existingUser,
-      ...updateData,
-      updatedAt: new Date().toISOString(),
-    };
+    const allowed = ['name', 'bio', 'role', 'status', 'isEmailVerified', 'password', 'lastLoginAt'];
 
-    // Keep primary key immutable
-    updatedUser.id = existingUser.id;
+    for (const key of allowed) {
+      if (updateData[key] !== undefined) {
+        fields.push(`${key} = ?`);
+        if (key === 'isEmailVerified') {
+          params.push(updateData[key] ? 1 : 0);
+        } else {
+          params.push(updateData[key]);
+        }
+      }
+    }
 
-    users[index] = updatedUser;
-    this._atomicWriteFileSync(users);
+    if (fields.length === 0) {
+      return this.findById(id);
+    }
 
-    return this.sanitizeUser(updatedUser);
+    fields.push('updatedAt = ?');
+    params.push(new Date().toISOString());
+
+    params.push(id);
+    const sql = `UPDATE users SET ${fields.join(', ')} WHERE id = ? AND isDeleted = 0`;
+    const stmt = this.db.prepare(sql);
+    stmt.run(...params);
+
+    return this.findById(id);
   }
 
   /**
-   * Updates internal user authentication fields (e.g., password, reset tokens).
+   * Updates authentication security fields (passwords, tokens, lockout, MFA).
    * @param {string} id
    * @param {Object} authFields
    * @returns {Promise<Object|null>}
    */
   async updateAuthFields(id, authFields) {
-    const users = this._readAll();
-    const index = users.findIndex((u) => u.id === id && !u.isDeleted);
-    if (index === -1) return null;
+    const fields = [];
+    const params = [];
 
-    const updatedUser = {
-      ...users[index],
-      ...authFields,
-      updatedAt: new Date().toISOString(),
+    for (const [key, val] of Object.entries(authFields)) {
+      fields.push(`${key} = ?`);
+      if (typeof val === 'boolean') {
+        params.push(val ? 1 : 0);
+      } else {
+        params.push(val);
+      }
+    }
+
+    fields.push('updatedAt = ?');
+    params.push(new Date().toISOString());
+    params.push(id);
+
+    const sql = `UPDATE users SET ${fields.join(', ')} WHERE id = ? AND isDeleted = 0`;
+    this.db.prepare(sql).run(...params);
+
+    return this.findById(id, { includePassword: true });
+  }
+
+  /**
+   * Increments failed login attempts and applies temporary account lockout if threshold is exceeded.
+   * Threshold: 5 failed attempts locks the account for 15 minutes.
+   * @param {string} userId
+   * @returns {Promise<{ isLocked: boolean, lockUntil: string|null, attempts: number }>}
+   */
+  async incrementFailedLoginAttempts(userId) {
+    const user = await this.findById(userId, { includePassword: true });
+    if (!user) return { isLocked: false, lockUntil: null, attempts: 0 };
+
+    const newAttempts = (user.failedLoginAttempts || 0) + 1;
+    let lockUntil = null;
+    let isLocked = false;
+
+    // Lock account if 5 consecutive failed attempts
+    if (newAttempts >= 5) {
+      isLocked = true;
+      // Lock for 15 minutes
+      lockUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    }
+
+    const stmt = this.db.prepare(`
+      UPDATE users
+      SET failedLoginAttempts = ?, lockUntil = ?, updatedAt = ?
+      WHERE id = ?
+    `);
+    stmt.run(newAttempts, lockUntil, new Date().toISOString(), userId);
+
+    return {
+      isLocked,
+      lockUntil,
+      attempts: newAttempts,
     };
+  }
 
-    users[index] = updatedUser;
-    this._atomicWriteFileSync(users);
+  /**
+   * Resets failed login attempts after successful authentication.
+   * @param {string} userId
+   */
+  async resetFailedLoginAttempts(userId) {
+    const stmt = this.db.prepare(`
+      UPDATE users
+      SET failedLoginAttempts = 0, lockUntil = NULL, updatedAt = ?
+      WHERE id = ?
+    `);
+    stmt.run(new Date().toISOString(), userId);
+  }
 
-    return updatedUser;
+  /**
+   * Sets MFA secret for user.
+   * @param {string} userId
+   * @param {string} mfaSecret
+   */
+  async setMfaSecret(userId, mfaSecret) {
+    const stmt = this.db.prepare(`
+      UPDATE users
+      SET mfaSecret = ?, updatedAt = ?
+      WHERE id = ?
+    `);
+    stmt.run(mfaSecret, new Date().toISOString(), userId);
+  }
+
+  /**
+   * Enables MFA on user account.
+   * @param {string} userId
+   */
+  async enableMfa(userId) {
+    const stmt = this.db.prepare(`
+      UPDATE users
+      SET mfaEnabled = 1, updatedAt = ?
+      WHERE id = ?
+    `);
+    stmt.run(new Date().toISOString(), userId);
+  }
+
+  /**
+   * Disables MFA on user account.
+   * @param {string} userId
+   */
+  async disableMfa(userId) {
+    const stmt = this.db.prepare(`
+      UPDATE users
+      SET mfaEnabled = 0, mfaSecret = NULL, updatedAt = ?
+      WHERE id = ?
+    `);
+    stmt.run(new Date().toISOString(), userId);
   }
 
   /**
@@ -261,56 +373,58 @@ class UserRepository {
    * @returns {Promise<boolean>}
    */
   async delete(id, hardDelete = false) {
-    const users = this._readAll();
-    const index = users.findIndex((u) => u.id === id);
-    if (index === -1) return false;
-
     if (hardDelete) {
-      users.splice(index, 1);
-    } else {
-      users[index].isDeleted = true;
-      users[index].deletedAt = new Date().toISOString();
-      users[index].updatedAt = new Date().toISOString();
+      const stmt = this.db.prepare('DELETE FROM users WHERE id = ?');
+      const info = stmt.run(id);
+      return info.changes > 0;
     }
 
-    this._atomicWriteFileSync(users);
-    return true;
+    const stmt = this.db.prepare(`
+      UPDATE users
+      SET isDeleted = 1, deletedAt = ?, updatedAt = ?
+      WHERE id = ?
+    `);
+    const now = new Date().toISOString();
+    const info = stmt.run(now, now, id);
+    return info.changes > 0;
   }
 
   /**
-   * Aggregates statistics for the administrative dashboard.
+   * Aggregates administrative system statistics.
    * @returns {Promise<Object>}
    */
   async getStatistics() {
-    const users = this._readAll().filter((u) => !u.isDeleted);
-    const stats = {
-      totalUsers: users.length,
+    const sql = `
+      SELECT
+        COUNT(*) as totalUsers,
+        SUM(CASE WHEN role = 'ADMIN' THEN 1 ELSE 0 END) as adminCount,
+        SUM(CASE WHEN role = 'MODERATOR' THEN 1 ELSE 0 END) as modCount,
+        SUM(CASE WHEN role = 'USER' THEN 1 ELSE 0 END) as userCount,
+        SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END) as activeCount,
+        SUM(CASE WHEN status = 'SUSPENDED' THEN 1 ELSE 0 END) as suspendedCount,
+        SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pendingCount,
+        SUM(CASE WHEN isEmailVerified = 1 THEN 1 ELSE 0 END) as verifiedEmails,
+        SUM(CASE WHEN mfaEnabled = 1 THEN 1 ELSE 0 END) as mfaEnabledCount
+      FROM users
+      WHERE isDeleted = 0
+    `;
+    const row = this.db.prepare(sql).get();
+
+    return {
+      totalUsers: row.totalUsers || 0,
       byRole: {
-        ADMIN: 0,
-        MODERATOR: 0,
-        USER: 0,
+        ADMIN: row.adminCount || 0,
+        MODERATOR: row.modCount || 0,
+        USER: row.userCount || 0,
       },
       byStatus: {
-        ACTIVE: 0,
-        SUSPENDED: 0,
-        PENDING: 0,
+        ACTIVE: row.activeCount || 0,
+        SUSPENDED: row.suspendedCount || 0,
+        PENDING: row.pendingCount || 0,
       },
-      verifiedEmails: 0,
+      verifiedEmails: row.verifiedEmails || 0,
+      mfaActiveUsers: row.mfaEnabledCount || 0,
     };
-
-    for (const u of users) {
-      if (stats.byRole[u.role] !== undefined) {
-        stats.byRole[u.role]++;
-      }
-      if (stats.byStatus[u.status] !== undefined) {
-        stats.byStatus[u.status]++;
-      }
-      if (u.isEmailVerified) {
-        stats.verifiedEmails++;
-      }
-    }
-
-    return stats;
   }
 }
 

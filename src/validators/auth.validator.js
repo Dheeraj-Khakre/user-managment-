@@ -1,7 +1,7 @@
 /**
  * @file auth.validator.js
- * @description Zod validation schemas for authentication request payloads.
- * Enforces strong password complexity, valid email formats, and parameter sanity.
+ * @description Zod validation schemas for authentication request payloads,
+ * including password complexity, login credentials, and Multi-Factor Authentication.
  */
 
 const { z } = require('zod');
@@ -95,6 +95,38 @@ const resetPasswordSchema = z.object({
   }),
 });
 
+/**
+ * Step 2 of MFA login challenge
+ */
+const mfaLoginStep2Schema = z.object({
+  body: z.object({
+    mfaToken: z.string({ required_error: 'MFA challenge token is required' }).min(1),
+    code: z
+      .string({ required_error: '6-digit OTP code is required' })
+      .regex(/^\d{6}$/, 'OTP code must be exactly 6 numeric digits'),
+  }),
+});
+
+/**
+ * Verifying and enabling MFA schema
+ */
+const verifyMfaSchema = z.object({
+  body: z.object({
+    code: z
+      .string({ required_error: '6-digit OTP code is required' })
+      .regex(/^\d{6}$/, 'OTP code must be exactly 6 numeric digits'),
+  }),
+});
+
+/**
+ * Disabling MFA schema
+ */
+const disableMfaSchema = z.object({
+  body: z.object({
+    password: z.string({ required_error: 'Password is required to disable MFA' }).min(1),
+  }),
+});
+
 module.exports = {
   registerSchema,
   loginSchema,
@@ -102,5 +134,8 @@ module.exports = {
   changePasswordSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  mfaLoginStep2Schema,
+  verifyMfaSchema,
+  disableMfaSchema,
   passwordConstraint,
 };

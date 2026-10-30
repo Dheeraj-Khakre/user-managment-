@@ -1,96 +1,74 @@
 /**
  * @file token.repository.js
- * @description Data access layer for Refresh Tokens supporting rotation and replay detection.
- * Refresh tokens are hashed using SHA-256 before persistence to prevent credential leaks.
+ * @description SQLite Data Access Object for Refresh Tokens with replay detection and token family tracking.
  */
 
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
-const envConfig = require('../config/env.config');
-const logger = require('../utils/logger');
+const { getDatabase } = require('../db/sqlite');
 
 class TokenRepository {
   constructor() {
-    this.dataDir = path.resolve(process.cwd(), envConfig.DATA_DIR);
-    this.filePath = path.join(this.dataDir, 'tokens.json');
-    this._initializeStorage();
+    this._db = null;
   }
 
   /**
-   * Initializes tokens file if absent.
+   * Returns active database instance.
    * @private
+   * @returns {import('node:sqlite').DatabaseSync}
    */
-  _initializeStorage() {
-    if (!fs.existsSync(this.dataDir)) {
-      fs.mkdirSync(this.dataDir, { recursive: true });
+  get db() {
+    if (!this._db) {
+      this._db = getDatabase();
     }
-    if (!fs.existsSync(this.filePath)) {
-      this._atomicWriteFileSync([]);
-    }
+    return this._db;
   }
 
   /**
-   * Reads all token records synchronously.
-   * @private
-   * @returns {Array<Object>}
+   * Sets custom database instance (e.g. for testing in-memory isolation).
+   * @param {import('node:sqlite').DatabaseSync} customDb
    */
-  _readAll() {
-    try {
-      const content = fs.readFileSync(this.filePath, 'utf8');
-      return JSON.parse(content || '[]');
-    } catch (error) {
-      logger.error('Failed to read tokens database file:', error);
-      return [];
-    }
+  setDatabase(customDb) {
+    this._db = customDb;
   }
 
   /**
-   * Writes all tokens atomically using a temporary file.
-   * @private
-   * @param {Array<Object>} data
-   */
-  _atomicWriteFileSync(data) {
-    const tempPath = `${this.filePath}.${crypto.randomUUID()}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
-    fs.renameSync(tempPath, this.filePath);
-  }
-
-  /**
-   * Hash a raw token with SHA-256 for secure lookup and storage.
+   * Hashes a raw refresh token using SHA-256 for secure storage and constant-time indexed lookup.
    * @param {string} rawToken
-   * @returns {string}
+   * @returns {string} Hex-encoded SHA-256 hash
    */
   hashToken(rawToken) {
     return crypto.createHash('sha256').update(rawToken).digest('hex');
   }
 
   /**
-   * Saves a newly issued refresh token.
+   * Inserts a new refresh token record.
    * @param {Object} tokenData
-   * @param {string} tokenData.tokenId - Unique JWT identifier (jti)
-   * @param {string} tokenData.userId - User primary key
-   * @param {string} tokenData.familyId - Token family for rotation replay detection
-   * @param {string} tokenData.rawToken - Raw refresh token string (will be hashed)
-   * @param {Date} tokenData.expiresAt - Token expiry date
    * @returns {Promise<Object>}
    */
   async createToken({ tokenId, userId, familyId, rawToken, expiresAt }) {
-    const tokens = this._readAll();
-    const tokenRecord = {
+    const tokenHash = this.hashToken(rawToken);
+    const now = new Date().toISOString();
+    const effectiveFamilyId = familyId || crypto.randomUUID();
+    const expiresAtIso = expiresAt instanceof Date ? expiresAt.toISOString() : expiresAt;
+
+    const stmt = this.db.prepare(`
+      INSERT INTO tokens (
+        id, userId, familyId, tokenHash, expiresAt,
+        isRevoked, replacedBy, revocationReason, revokedAt, createdAt
+      ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?)
+    `);
+
+    stmt.run(tokenId, userId, effectiveFamilyId, tokenHash, expiresAtIso, now);
+
+    return {
       id: tokenId,
       userId,
-      familyId: familyId || crypto.randomUUID(),
-      tokenHash: this.hashToken(rawToken),
-      expiresAt: expiresAt.toISOString(),
+      familyId: effectiveFamilyId,
+      tokenHash,
+      expiresAt: expiresAtIso,
       isRevoked: false,
-      replacedBy: null,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
-
-    tokens.push(tokenRecord);
-    this._atomicWriteFileSync(tokens);
-    return tokenRecord;
   }
 
   /**
@@ -100,8 +78,13 @@ class TokenRepository {
    */
   async findByRawToken(rawToken) {
     const tokenHash = this.hashToken(rawToken);
-    const tokens = this._readAll();
-    return tokens.find((t) => t.tokenHash === tokenHash) || null;
+    const stmt = this.db.prepare('SELECT * FROM tokens WHERE tokenHash = ?');
+    const row = stmt.get(tokenHash);
+    if (!row) return null;
+    return {
+      ...row,
+      isRevoked: Boolean(row.isRevoked),
+    };
   }
 
   /**
@@ -111,82 +94,58 @@ class TokenRepository {
    * @returns {Promise<boolean>}
    */
   async markAsReplaced(tokenId, newTokenId) {
-    const tokens = this._readAll();
-    const token = tokens.find((t) => t.id === tokenId);
-    if (!token) return false;
-
-    token.isRevoked = true;
-    token.replacedBy = newTokenId;
-    token.revokedAt = new Date().toISOString();
-
-    this._atomicWriteFileSync(tokens);
-    return true;
+    const stmt = this.db.prepare(`
+      UPDATE tokens
+      SET isRevoked = 1, replacedBy = ?, revokedAt = ?
+      WHERE id = ?
+    `);
+    const info = stmt.run(newTokenId, new Date().toISOString(), tokenId);
+    return info.changes > 0;
   }
 
   /**
-   * Revokes an entire token family when a reused/stolen token is detected.
+   * Revokes an entire token family when a reused or stolen token is detected.
    * @param {string} familyId
    * @returns {Promise<number>} Number of tokens revoked
    */
   async revokeFamily(familyId) {
-    const tokens = this._readAll();
-    let count = 0;
-    const now = new Date().toISOString();
-
-    for (const t of tokens) {
-      if (t.familyId === familyId && !t.isRevoked) {
-        t.isRevoked = true;
-        t.revokedAt = now;
-        t.revocationReason = 'FAMILY_COMPROMISED_REPLAY_DETECTED';
-        count++;
-      }
-    }
-
-    if (count > 0) {
-      this._atomicWriteFileSync(tokens);
-    }
-    return count;
+    const stmt = this.db.prepare(`
+      UPDATE tokens
+      SET isRevoked = 1,
+          revokedAt = ?,
+          revocationReason = 'FAMILY_COMPROMISED_REPLAY_DETECTED'
+      WHERE familyId = ? AND isRevoked = 0
+    `);
+    const info = stmt.run(new Date().toISOString(), familyId);
+    return info.changes;
   }
 
   /**
-   * Revokes all refresh tokens for a specific user (e.g., on password reset or global logout).
+   * Revokes all refresh tokens for a specific user (on password reset or global logout).
    * @param {string} userId
    * @returns {Promise<number>}
    */
   async revokeAllUserTokens(userId) {
-    const tokens = this._readAll();
-    let count = 0;
-    const now = new Date().toISOString();
-
-    for (const t of tokens) {
-      if (t.userId === userId && !t.isRevoked) {
-        t.isRevoked = true;
-        t.revokedAt = now;
-        t.revocationReason = 'USER_SESSION_TERMINATION';
-        count++;
-      }
-    }
-
-    if (count > 0) {
-      this._atomicWriteFileSync(tokens);
-    }
-    return count;
+    const stmt = this.db.prepare(`
+      UPDATE tokens
+      SET isRevoked = 1,
+          revokedAt = ?,
+          revocationReason = 'USER_SESSION_TERMINATION'
+      WHERE userId = ? AND isRevoked = 0
+    `);
+    const info = stmt.run(new Date().toISOString(), userId);
+    return info.changes;
   }
 
   /**
-   * Purges expired and revoked tokens older than 30 days to prevent unbounded growth.
+   * Purges expired and revoked tokens.
    * @returns {Promise<number>}
    */
   async purgeExpiredTokens() {
-    const tokens = this._readAll();
-    const now = new Date();
-    const validTokens = tokens.filter((t) => new Date(t.expiresAt) > now);
-    const purged = tokens.length - validTokens.length;
-
-    if (purged > 0) {
-      this._atomicWriteFileSync(validTokens);
-    }
-    return purged;
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare('DELETE FROM tokens WHERE expiresAt < ?');
+    const info = stmt.run(now);
+    return info.changes;
   }
 }
 

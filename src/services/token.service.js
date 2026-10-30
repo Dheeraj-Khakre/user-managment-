@@ -13,6 +13,48 @@ const logger = require('../utils/logger');
 
 class TokenService {
   /**
+   * Generates a short-lived temporary token for completing the 2nd step of MFA login.
+   * @param {Object} user
+   * @returns {string} Signed JWT MFA challenge token
+   */
+  generateMfaToken(user) {
+    return jwt.sign(
+      {
+        sub: user.id,
+        email: user.email,
+        type: 'mfa_pending',
+      },
+      envConfig.JWT_ACCESS_SECRET,
+      {
+        expiresIn: '5m',
+        issuer: 'secure-user-management-api',
+      }
+    );
+  }
+
+  /**
+   * Verifies an MFA challenge token.
+   * @param {string} token
+   * @returns {Object} Decoded payload
+   */
+  verifyMfaToken(token) {
+    try {
+      const decoded = jwt.verify(token, envConfig.JWT_ACCESS_SECRET, {
+        issuer: 'secure-user-management-api',
+      });
+      if (decoded.type !== 'mfa_pending') {
+        throw ApiError.unauthorized('Invalid MFA token type.');
+      }
+      return decoded;
+    } catch (error) {
+      if (error instanceof jwt.TokenExpiredError) {
+        throw ApiError.unauthorized('MFA verification session has expired. Please login again.');
+      }
+      throw ApiError.unauthorized('Invalid MFA verification token.');
+    }
+  }
+
+  /**
    * Generates a short-lived access token.
    * @param {Object} payload - User identification and role claims.
    * @param {string} payload.id - User ID

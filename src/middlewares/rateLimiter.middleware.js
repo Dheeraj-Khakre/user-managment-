@@ -1,6 +1,6 @@
 /**
  * @file rateLimiter.middleware.js
- * @description Rate limiting middleware to protect the API from brute-force attacks and DoS.
+ * @description Rate limiting middleware protecting against brute-force and DoS attacks.
  */
 
 const rateLimit = require('express-rate-limit');
@@ -13,23 +13,34 @@ const ApiError = require('../utils/ApiError');
 const apiLimiter = rateLimit({
   windowMs: envConfig.RATE_LIMIT_WINDOW_MS,
   max: envConfig.RATE_LIMIT_MAX,
-  standardHeaders: true, // Return standard RateLimit-* headers
-  legacyHeaders: false, // Disable X-RateLimit-* headers
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    if (process.env.NODE_ENV === 'test') {
+      return req.headers['x-test-rate-limit'] !== 'true';
+    }
+    return false;
+  },
   handler: (req, res, next) => {
     next(ApiError.tooManyRequests('Too many requests from this IP. Please try again after 15 minutes.'));
   },
 });
 
 /**
- * Strict rate limiter specifically guarding authentication endpoints
- * (login, register, forgot-password, reset-password) against brute force.
+ * Strict rate limiter guarding sensitive authentication routes.
  */
 const authLimiter = rateLimit({
   windowMs: envConfig.AUTH_RATE_LIMIT_WINDOW_MS,
   max: envConfig.AUTH_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: false,
+  skip: (req) => {
+    // In test environment, only enforce when x-test-rate-limit header is set
+    if (process.env.NODE_ENV === 'test') {
+      return req.headers['x-test-rate-limit'] !== 'true';
+    }
+    return false;
+  },
   handler: (req, res, next) => {
     next(
       ApiError.tooManyRequests(
