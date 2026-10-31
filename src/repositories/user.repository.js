@@ -40,12 +40,19 @@ class UserRepository {
    */
   sanitizeUser(user) {
     if (!user) return null;
-    const { password, mfaSecret, passwordResetToken, ...safeUser } = user;
     return {
-      ...safeUser,
-      isEmailVerified: Boolean(safeUser.isEmailVerified),
-      isDeleted: Boolean(safeUser.isDeleted),
-      mfaEnabled: Boolean(safeUser.mfaEnabled),
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      bio: user.bio,
+      isEmailVerified: Boolean(user.isEmailVerified),
+      mfaEnabled: Boolean(user.mfaEnabled),
+      lastLoginAt: user.lastLoginAt,
+      passwordChangedAt: user.passwordChangedAt,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
     };
   }
 
@@ -172,6 +179,22 @@ class UserRepository {
     return row ? this._mapRow(row) : null;
   }
 
+  async consumePasswordResetToken(hashedToken, password, passwordChangedAt) {
+    const now = new Date().toISOString();
+    const info = this.db.prepare(`
+      UPDATE users
+      SET password = ?,
+          passwordResetToken = NULL,
+          passwordResetExpires = NULL,
+          passwordChangedAt = ?,
+          updatedAt = ?
+      WHERE passwordResetToken = ?
+        AND passwordResetExpires > ?
+        AND isDeleted = 0
+    `).run(password, passwordChangedAt, now, hashedToken, now);
+    return info.changes === 1;
+  }
+
   /**
    * Creates a new user record in SQLite.
    * @param {Object} userData
@@ -221,7 +244,7 @@ class UserRepository {
     const fields = [];
     const params = [];
 
-    const allowed = ['name', 'bio', 'role', 'status', 'isEmailVerified', 'password', 'lastLoginAt'];
+    const allowed = ['name', 'bio', 'role', 'status', 'isEmailVerified', 'password', 'lastLoginAt', 'passwordChangedAt'];
 
     for (const key of allowed) {
       if (updateData[key] !== undefined) {

@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const userRepository = require('../repositories/user.repository');
 const tokenRepository = require('../repositories/token.repository');
 const tokenService = require('./token.service');
+const emailService = require('./email.service');
 const totpUtil = require('../utils/totp');
 const ApiError = require('../utils/ApiError');
 const logger = require('../utils/logger');
@@ -17,6 +18,7 @@ const { ROLES } = require('../constants/roles');
 const { HTTP_STATUS } = require('../constants/httpStatusCodes');
 
 const BCRYPT_SALT_ROUNDS = 12;
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), BCRYPT_SALT_ROUNDS);
 
 class AuthService {
   /**
@@ -62,7 +64,7 @@ class AuthService {
       status: 'ACTIVE',
     });
 
-    const accessToken = tokenService.generateAccessToken(newUser);
+    const accessToken = tokenService.generateAccessToken(newUser, newUser.passwordChangedAt);
     const { refreshToken } = await tokenService.generateRefreshToken(newUser);
 
     logger.info(`New user registered successfully: [${newUser.id}] ${newUser.email}`);
@@ -86,7 +88,7 @@ class AuthService {
   async login({ email, password }) {
     const user = await userRepository.findByEmail(email, { includePassword: true });
     if (!user) {
-      // Uniform timing/message defense against user enumeration
+      await this.comparePassword(password, DUMMY_PASSWORD_HASH);
       throw ApiError.unauthorized('Invalid email or password.');
     }
 
@@ -130,7 +132,7 @@ class AuthService {
 
     // 5. Multi-Factor Authentication (MFA) Check
     if (user.mfaEnabled) {
-      const mfaToken = tokenService.generateMfaToken(sanitizedUser);
+      const mfaToken = tokenService.generateMfaToken(sanitizedUser, user.passwordChangedAt);
       logger.info(`MFA verification required for user [${user.id}] ${user.email}`);
       return {
         mfaRequired: true,
@@ -140,7 +142,7 @@ class AuthService {
     }
 
     // 6. Generate final tokens if MFA not required
-    const accessToken = tokenService.generateAccessToken(sanitizedUser);
+    const accessToken = tokenService.generateAccessToken(sanitizedUser, user.passwordChangedAt);
     const { refreshToken } = await tokenService.generateRefreshToken(sanitizedUser);
 
     logger.info(`User logged in successfully: [${user.id}] ${user.email}`);
@@ -170,6 +172,10 @@ class AuthService {
       throw ApiError.unauthorized('User session is invalid or user has been disabled.');
     }
 
+    if ((decoded.pwdv ?? null) !== (user.passwordChangedAt ?? null)) {
+      throw ApiError.unauthorized('MFA verification session is no longer valid. Please login again.');
+    }
+
     if (!user.mfaEnabled || !user.mfaSecret) {
       throw ApiError.badRequest('MFA is not enabled on this account.');
     }
@@ -180,7 +186,7 @@ class AuthService {
     }
 
     const sanitizedUser = userRepository.sanitizeUser(user);
-    const accessToken = tokenService.generateAccessToken(sanitizedUser);
+    const accessToken = tokenService.generateAccessToken(sanitizedUser, user.passwordChangedAt);
     const { refreshToken } = await tokenService.generateRefreshToken(sanitizedUser);
 
     logger.info(`User successfully completed MFA login: [${user.id}] ${user.email}`);
@@ -203,6 +209,10 @@ class AuthService {
     const user = await userRepository.findById(userId);
     if (!user) {
       throw ApiError.notFound('User not found.');
+    }
+
+    if (user.mfaEnabled) {
+      throw ApiError.conflict('MFA is already enabled. Disable it with your password before setting it up again.');
     }
 
     const secret = totpUtil.generateSecret();
@@ -269,16 +279,17 @@ class AuthService {
   async refreshToken(refreshToken) {
     const { tokenRecord } = await tokenService.verifyRefreshToken(refreshToken);
 
-    const user = await userRepository.findById(tokenRecord.userId);
-    if (!user) {
+    const userRecord = await userRepository.findById(tokenRecord.userId, { includePassword: true });
+    if (!userRecord) {
       throw ApiError.unauthorized('User associated with this token no longer exists.');
     }
 
-    if (user.status === 'SUSPENDED') {
+    if (userRecord.status === 'SUSPENDED') {
       throw ApiError.forbidden('Account has been suspended.');
     }
 
-    const rotatedTokens = await tokenService.rotateRefreshToken(refreshToken, user);
+    const user = userRepository.sanitizeUser(userRecord);
+    const rotatedTokens = await tokenService.rotateRefreshToken(refreshToken, user, userRecord.passwordChangedAt);
     logger.debug(`Token rotated successfully for user [${user.id}]`);
     return { tokens: rotatedTokens };
   }
@@ -349,7 +360,8 @@ class AuthService {
     const user = await userRepository.findByEmail(email);
     const responseMsg = 'If a matching account is found, password reset instructions have been dispatched.';
 
-    if (!user) {
+    if (!user || !emailService.isConfigured()) {
+      if (user) logger.warn('Password reset requested but email delivery is not configured.');
       return { message: responseMsg };
     }
 
@@ -360,12 +372,12 @@ class AuthService {
       passwordResetExpires: expires,
     });
 
+    void emailService.sendPasswordResetEmail(user.email, plainToken).catch((error) => {
+      logger.error('Password reset email delivery failed.', { code: error.code || 'SMTP_ERROR' });
+    });
     logger.info(`Password reset requested for user [${user.id}]`);
 
-    return {
-      message: responseMsg,
-      resetToken: plainToken,
-    };
+    return { message: responseMsg };
   }
 
   /**
@@ -377,24 +389,17 @@ class AuthService {
   async resetPassword(plainToken, newPassword) {
     const hashedToken = crypto.createHash('sha256').update(plainToken).digest('hex');
     const user = await userRepository.findByResetToken(hashedToken);
-    const now = new Date();
-
-    if (!user || !user.passwordResetExpires || new Date(user.passwordResetExpires) <= now) {
-      throw ApiError.badRequest('Password reset token is invalid or has expired.');
-    }
-
     const hashedPassword = await this.hashPassword(newPassword);
-
-    await userRepository.updateAuthFields(user.id, {
-      password: hashedPassword,
-      passwordResetToken: null,
-      passwordResetExpires: null,
-      passwordChangedAt: new Date().toISOString(),
-    });
+    const consumed = await userRepository.consumePasswordResetToken(
+      hashedToken,
+      hashedPassword,
+      new Date().toISOString()
+    );
+    if (!consumed) throw ApiError.badRequest('Password reset token is invalid or has expired.');
 
     // Revoke all active sessions
     await tokenRepository.revokeAllUserTokens(user.id);
-    logger.info(`Password reset completed for user [${user.id}]`);
+    logger.info('Password reset completed.');
 
     return true;
   }

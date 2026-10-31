@@ -10,6 +10,7 @@ const cors = require('cors');
 const hpp = require('hpp');
 const cookieParser = require('cookie-parser');
 const envConfig = require('./config/env.config');
+const ApiError = require('./utils/ApiError');
 const apiRoutes = require('./routes');
 const { swaggerUi, swaggerSpec } = require('./docs/swagger');
 const morganMiddleware = require('./middlewares/requestLogger.middleware');
@@ -19,7 +20,7 @@ const { errorHandler, notFoundHandler } = require('./middlewares/error.middlewar
 const app = express();
 
 // 1. Trust first proxy if running behind reverse proxy
-app.set('trust proxy', 1);
+app.set('trust proxy', envConfig.TRUST_PROXY_HOPS);
 
 // 2. Helmet - Sets comprehensive security HTTP response headers
 app.use(
@@ -27,9 +28,14 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
         imgSrc: ["'self'", 'data:', 'https:'],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"],
+        formAction: ["'self'"],
       },
     },
     crossOriginEmbedderPolicy: false,
@@ -41,10 +47,10 @@ const allowedOrigins = envConfig.CORS_ORIGIN.split(',').map((origin) => origin.t
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+      if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      return callback(new Error(`CORS blocked request from origin: ${origin}`));
+      return callback(ApiError.forbidden('Request origin is not allowed.'));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

@@ -71,7 +71,7 @@ export type LoginResponseData = LoginSuccessData | MfaChallengeData;
 
 export interface MfaSetupData {
   secret: string;
-  otpauthUrl: string;
+  otpAuthUrl: string;
 }
 
 export interface UserStats {
@@ -96,7 +96,7 @@ export interface QueryUsersParams {
   search?: string;
   role?: Role;
   status?: UserStatus;
-  sortBy?: 'createdAt' | 'name' | 'email' | 'role' | 'status' | 'updatedAt';
+  sortBy?: 'createdAt' | 'name' | 'email' | 'role' | 'status';
   sortOrder?: 'asc' | 'desc';
 }
 

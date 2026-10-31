@@ -133,6 +133,7 @@ class UserService {
     // If changing password by admin
     if (updateData.password) {
       payload.password = await bcrypt.hash(updateData.password, 12);
+      payload.passwordChangedAt = new Date().toISOString();
       // Revoke all tokens for that user
       await tokenRepository.revokeAllUserTokens(targetUserId);
     }

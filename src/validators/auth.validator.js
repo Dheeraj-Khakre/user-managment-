@@ -57,9 +57,7 @@ const loginSchema = z.object({
  * Token refresh schema
  */
 const refreshTokenSchema = z.object({
-  body: z.object({
-    refreshToken: z.string().optional(),
-  }),
+  body: z.object({}),
 });
 
 /**

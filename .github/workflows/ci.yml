@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run backend tests
+        run: npm test
+        env:
+          JWT_ACCESS_SECRET: ci-only-access-secret-0123456789-abcdefgh
+          JWT_REFRESH_SECRET: ci-only-refresh-secret-0123456789-abcdef
+          COOKIE_SECRET: ci-only-cookie-secret-0123456789
+
+      - name: Run API end-to-end tests
+        run: |
+          npm run seed
+          node src/server.js > api.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent "$TEST_BASE_URL/api/v1/health" > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent "$TEST_BASE_URL/api/v1/health" > /dev/null
+          npm run test:e2e
+        env:
+          NODE_ENV: development
+          PORT: '5000'
+          HOST: 127.0.0.1
+          DATA_DIR: ${{ runner.temp }}/user-management-e2e-data
+          TEST_BASE_URL: http://127.0.0.1:5000
+          JWT_ACCESS_SECRET: ci-only-access-secret-0123456789-abcdefgh
+          JWT_REFRESH_SECRET: ci-only-refresh-secret-0123456789-abcdef
+          COOKIE_SECRET: ci-only-cookie-secret-0123456789
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build

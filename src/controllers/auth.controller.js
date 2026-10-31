@@ -112,7 +112,7 @@ class AuthController {
    * POST /api/v1/auth/refresh-token
    */
   refreshToken = asyncHandler(async (req, res) => {
-    const token = req.cookies?.refreshToken || req.body?.refreshToken;
+    const token = req.cookies?.refreshToken;
 
     if (!token) {
       throw ApiError.unauthorized('Refresh token is required.');
@@ -131,7 +131,7 @@ class AuthController {
    * POST /api/v1/auth/logout
    */
   logout = asyncHandler(async (req, res) => {
-    const token = req.cookies?.refreshToken || req.body?.refreshToken;
+    const token = req.cookies?.refreshToken;
 
     if (token) {
       await authService.logout(token);

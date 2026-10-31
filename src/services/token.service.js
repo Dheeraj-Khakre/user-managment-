@@ -17,12 +17,13 @@ class TokenService {
    * @param {Object} user
    * @returns {string} Signed JWT MFA challenge token
    */
-  generateMfaToken(user) {
+  generateMfaToken(user, passwordChangedAt = user.passwordChangedAt ?? null) {
     return jwt.sign(
       {
         sub: user.id,
         email: user.email,
         type: 'mfa_pending',
+        pwdv: passwordChangedAt,
       },
       envConfig.JWT_ACCESS_SECRET,
       {
@@ -62,13 +63,14 @@ class TokenService {
    * @param {string} payload.role - User RBAC role
    * @returns {string} Signed JWT access token
    */
-  generateAccessToken(payload) {
+  generateAccessToken(payload, passwordChangedAt = payload.passwordChangedAt ?? null) {
     return jwt.sign(
       {
         sub: payload.id,
         email: payload.email,
         role: payload.role,
         type: 'access',
+        pwdv: passwordChangedAt,
       },
       envConfig.JWT_ACCESS_SECRET,
       {
@@ -220,16 +222,20 @@ class TokenService {
    * @param {Object} user
    * @returns {Promise<{ accessToken: string, refreshToken: string }>}
    */
-  async rotateRefreshToken(oldRefreshToken, user) {
+  async rotateRefreshToken(oldRefreshToken, user, passwordChangedAt = user.passwordChangedAt ?? null) {
     const { decoded, tokenRecord } = await this.verifyRefreshToken(oldRefreshToken);
 
     // Issue new access and refresh tokens maintaining the same familyId
-    const newAccessToken = this.generateAccessToken(user);
+    const newAccessToken = this.generateAccessToken(user, passwordChangedAt);
     const { refreshToken: newRefreshToken, tokenId: newTokenId } =
       await this.generateRefreshToken(user, decoded.familyId);
 
     // Mark previous token as replaced
-    await tokenRepository.markAsReplaced(tokenRecord.id, newTokenId);
+    const replaced = await tokenRepository.markAsReplaced(tokenRecord.id, newTokenId);
+    if (!replaced) {
+      await tokenRepository.revokeFamily(decoded.familyId);
+      throw ApiError.unauthorized('Session compromised or already invalidated. Please log in again.');
+    }
 
     return {
       accessToken: newAccessToken,
