@@ -125,6 +125,30 @@ const disableMfaSchema = z.object({
   }),
 });
 
+const securityPurposeSchema = z.enum(['password_change', 'mfa_manage']);
+
+const requestStepUpOtpSchema = z.object({
+  body: z.object({
+    purpose: securityPurposeSchema,
+  }),
+});
+
+const verifyStepUpSchema = z.object({
+  body: z.discriminatedUnion('method', [
+    z.object({
+      method: z.literal('otp'),
+      purpose: securityPurposeSchema,
+      challengeId: z.string().uuid(),
+      code: z.string().regex(/^\d{6}$/, 'Verification code must be exactly 6 numeric digits'),
+    }),
+    z.object({
+      method: z.literal('password'),
+      purpose: securityPurposeSchema,
+      password: z.string().min(1).max(128),
+    }),
+  ]),
+});
+
 module.exports = {
   registerSchema,
   loginSchema,
@@ -135,5 +159,7 @@ module.exports = {
   mfaLoginStep2Schema,
   verifyMfaSchema,
   disableMfaSchema,
+  requestStepUpOtpSchema,
+  verifyStepUpSchema,
   passwordConstraint,
 };

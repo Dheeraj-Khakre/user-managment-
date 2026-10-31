@@ -74,6 +74,18 @@ export interface MfaSetupData {
   otpAuthUrl: string;
 }
 
+export type StepUpPurpose = 'password_change' | 'mfa_manage';
+
+export interface StepUpOtpData {
+  deliveryAvailable: boolean;
+  challengeId: string | null;
+  expiresInSeconds: number;
+}
+
+export interface StepUpVerifyData {
+  stepUpToken: string;
+}
+
 export interface UserStats {
   totalUsers: number;
   byRole: {
@@ -117,4 +129,3 @@ export interface UpdateUserInput {
   password?: string;
   isEmailVerified?: boolean;
 }
-

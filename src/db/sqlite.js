@@ -110,6 +110,23 @@ function initializeSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_tokens_familyId ON tokens(familyId);
     CREATE INDEX IF NOT EXISTS idx_tokens_userId ON tokens(userId);
   `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS security_otp_challenges (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      codeHash TEXT NOT NULL,
+      expiresAt TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      consumedAt TEXT DEFAULT NULL,
+      createdAt TEXT NOT NULL,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_security_otp_user_purpose
+      ON security_otp_challenges(userId, purpose, createdAt);
+  `);
 }
 
 /**

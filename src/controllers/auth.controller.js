@@ -8,6 +8,7 @@ const authService = require('../services/auth.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
+const securityService = require('../services/security.service');
 
 /**
  * Cookie options for the secure refresh token.
@@ -153,6 +154,22 @@ class AuthController {
    */
   getMe = asyncHandler(async (req, res) => {
     return ApiResponse.ok(res, req.user, 'Current user profile fetched.');
+  });
+
+  requestStepUpOtp = asyncHandler(async (req, res) => {
+    const result = await securityService.requestStepUpOtp(req.user.id, req.body.purpose);
+    return ApiResponse.ok(
+      res,
+      result,
+      result.deliveryAvailable
+        ? 'A verification code has been sent to your verified email address.'
+        : 'Email verification is unavailable. Use your current password to continue.'
+    );
+  });
+
+  verifyStepUp = asyncHandler(async (req, res) => {
+    const token = await securityService.verifyStepUp({ userId: req.user.id, ...req.body });
+    return ApiResponse.ok(res, { stepUpToken: token }, 'Identity verified.');
   });
 
   /**

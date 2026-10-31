@@ -12,6 +12,42 @@ const ApiError = require('../utils/ApiError');
 const logger = require('../utils/logger');
 
 class TokenService {
+  generateStepUpToken(user, purpose) {
+    return jwt.sign(
+      {
+        sub: user.id,
+        type: 'step_up',
+        purpose,
+        pwdv: user.passwordChangedAt ?? null,
+      },
+      envConfig.JWT_ACCESS_SECRET,
+      {
+        expiresIn: '5m',
+        issuer: 'secure-user-management-api',
+      }
+    );
+  }
+
+  verifyStepUpToken(token) {
+    try {
+      const decoded = jwt.verify(token, envConfig.JWT_ACCESS_SECRET, {
+        issuer: 'secure-user-management-api',
+      });
+      if (decoded.type !== 'step_up') {
+        throw ApiError.unauthorized('Invalid verification token type.');
+      }
+      return decoded;
+    } catch (error) {
+      if (error instanceof jwt.TokenExpiredError) {
+        throw ApiError.unauthorized('Identity verification has expired. Verify your identity again.');
+      }
+      if (error instanceof jwt.JsonWebTokenError) {
+        throw ApiError.unauthorized('Invalid identity verification token.');
+      }
+      throw error;
+    }
+  }
+
   /**
    * Generates a short-lived temporary token for completing the 2nd step of MFA login.
    * @param {Object} user
