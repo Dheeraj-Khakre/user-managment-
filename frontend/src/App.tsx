@@ -24,6 +24,8 @@ const UsersPage = lazy(() => import('./pages/UsersPage').then((module) => ({ def
 const UserDetailPage = lazy(() => import('./pages/UsersPage').then((module) => ({ default: module.UserDetailPage })));
 const ProfilePage = lazy(() => import('./pages/AccountPages').then((module) => ({ default: module.ProfilePage })));
 const SecurityPage = lazy(() => import('./pages/AccountPages').then((module) => ({ default: module.SecurityPage })));
+const ChangePasswordPage = lazy(() => import('./pages/AccountPages').then((module) => ({ default: module.ChangePasswordPage })));
+const MfaPage = lazy(() => import('./pages/AccountPages').then((module) => ({ default: module.MfaPage })));
 
 function AuthGate() {
   const { user, ready } = useAuth();
@@ -58,6 +60,8 @@ function AppShell() {
     '/users/new': 'Create user',
     '/profile': 'Your profile',
     '/security': 'Security settings',
+    '/security/password': 'Change password',
+    '/security/mfa': 'Multi-factor authentication',
   };
   const title = location.pathname.startsWith('/users/') && location.pathname !== '/users/new'
     ? 'User details'
@@ -95,6 +99,10 @@ function AppShell() {
           <p className="nav-label nav-label-spaced">ACCOUNT</p>
           <NavLink to="/profile" onClick={closeSidebar}><UserRound size={17} />My profile</NavLink>
           <NavLink to="/security" onClick={closeSidebar}><ShieldCheck size={17} />Security</NavLink>
+          <div className="nav-substack">
+            <NavLink to="/security/password" onClick={closeSidebar}>Change password</NavLink>
+            <NavLink to="/security/mfa" onClick={closeSidebar}>Multi-factor authentication</NavLink>
+          </div>
         </nav>
         <div className="sidebar-bottom">
           <div className="security-note"><span className="status-dot" /><span>Secure session<small>Cookie renewal enabled</small></span></div>
@@ -141,6 +149,8 @@ function AppRoutes() {
           <Route path="users/:id" element={<UserDetailPage />} />
           <Route path="profile" element={<ProfilePage />} />
           <Route path="security" element={<SecurityPage />} />
+          <Route path="security/password" element={<ChangePasswordPage />} />
+          <Route path="security/mfa" element={<MfaPage />} />
           <Route path="*" element={<div className="not-found"><span>404</span><h1>Page not found</h1><p>This destination is not part of this workspace.</p><NavLink className="button button-primary" to="/">Return to overview</NavLink></div>} />
         </Route>
       </Route>

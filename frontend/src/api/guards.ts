@@ -1,4 +1,4 @@
-import type { LoginResponseData, MfaSetupData, User, UserStats } from '../types';
+import type { LoginResponseData, MfaSetupData, StepUpOtpData, StepUpVerifyData, User, UserStats } from '../types';
 
 const roles = ['ADMIN', 'MODERATOR', 'USER'];
 const statuses = ['ACTIVE', 'SUSPENDED', 'PENDING'];
@@ -50,6 +50,20 @@ export function isMfaSetup(value: unknown): value is MfaSetupData {
   const setup = value as Record<string, unknown>;
   return typeof setup.secret === 'string' && setup.secret.length > 0
     && typeof setup.otpAuthUrl === 'string' && setup.otpAuthUrl.startsWith('otpauth://');
+}
+
+export function isStepUpOtpData(value: unknown): value is StepUpOtpData {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Record<string, unknown>;
+  return typeof result.deliveryAvailable === 'boolean'
+    && (typeof result.challengeId === 'string' || result.challengeId === null)
+    && typeof result.expiresInSeconds === 'number';
+}
+
+export function isStepUpVerifyData(value: unknown): value is StepUpVerifyData {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Record<string, unknown>;
+  return typeof result.stepUpToken === 'string' && result.stepUpToken.length > 0;
 }
 
 export function isLoginSuccess(value: unknown): value is Extract<LoginResponseData, { user: User }> {

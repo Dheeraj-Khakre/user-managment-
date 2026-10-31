@@ -46,7 +46,23 @@ async function sendPasswordResetEmail(email, token) {
   return true;
 }
 
+async function sendSecurityCodeEmail(email, code, purpose) {
+  const activeTransport = getTransport();
+  if (!activeTransport) return false;
+
+  const action = purpose === 'password_change' ? 'change your password' : 'manage multi-factor authentication';
+  await activeTransport.sendMail({
+    from: envConfig.SMTP_FROM,
+    to: email,
+    subject: 'Your Nexus Control verification code',
+    text: `Use this one-time code to ${action}: ${code}\n\nIt expires in 10 minutes. If you did not request this, you can ignore this message.`,
+    html: `<p>Use this one-time code to ${action}:</p><p style="font-size:24px;font-weight:bold;letter-spacing:5px">${code}</p><p>It expires in 10 minutes. If you did not request this, you can ignore this message.</p>`,
+  });
+  return true;
+}
+
 module.exports = {
   isConfigured: () => Boolean(envConfig.SMTP_HOST),
   sendPasswordResetEmail,
+  sendSecurityCodeEmail,
 };

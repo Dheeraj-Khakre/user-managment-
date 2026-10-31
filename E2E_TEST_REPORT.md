@@ -4,29 +4,27 @@
 
 ## Summary
 
-The first API end-to-end run stopped at password recovery. The test expected the forgot-password response to contain a reset token, but the API deliberately does not return tokens in HTTP responses. With no SMTP server configured locally, no reset email was delivered either. This was a stale test expectation, not a password-reset API failure.
-
-The E2E runner now checks that the response does not expose a token, creates a one-time hashed token for its temporary test user, and then exercises password reset, login with the new password, and token replay rejection. It also deletes its temporary users and no longer changes the seeded user's profile or password.
+An earlier API E2E run exposed a stale expectation that forgot-password would return a reset token. The API intentionally never returns reset tokens in HTTP responses. The runner now checks token non-disclosure and leaves one-time reset-token behavior to isolated integration tests, where a hashed test fixture can be created safely without assuming access to the target server's database. Temporary E2E users are removed even when a check fails.
 
 ## Results
 
 | Area | Result |
 |---|---|
-| Backend unit and integration suite | **Passed: 56/56 tests** |
-| API E2E runner | **Passed: 23 checks** |
+| Backend unit and integration suite | **Passed: 58/58 tests** |
+| API E2E runner | **Passed: 24 checks** |
 | Frontend TypeScript check and production build | **Passed** |
 | GitHub Actions | **Configured:** backend tests, API E2E against seeded temporary SQLite data, and frontend production build; hosted workflow run is pending |
 | Admin browser flow | **Passed:** login, dashboard metrics, directory, create account, change role/status, deactivate, and confirm the account no longer appears in search |
 | Standard-user browser flow | **Passed:** profile update and restore; directory navigation hidden; direct directory URL redirected to the restricted-access page |
 | API session flow | **Passed:** registration, login, refresh rotation, logout, and refresh-token replay rejection |
-| Docker Compose runtime | **Not run:** Docker Desktop's engine was unavailable in the test environment |
+| Docker Compose runtime | **Passed:** API and frontend healthy; frontend served successfully and API E2E checks ran against the Compose API |
 
-The API E2E runner also checks health, invalid credentials, authenticated profile access, role-based denial/allowance for admin statistics, password validation, admin user management, forgot-password response privacy, one-time password reset, and login with the reset password. GitHub Actions seeds a temporary database and runs this API E2E runner as part of CI.
+The API E2E runner also checks health, invalid credentials, authenticated profile access, role-based denial/allowance for admin statistics, password validation, admin user management, forgot-password response privacy, refresh-token rotation/replay, and step-up password verification/change. Integration tests cover password-reset token use and replay, step-up OTP validation/replay, and MFA setup and verification.
 
 ## Remaining verification limits
 
-- **Email delivery:** SMTP was not configured. The forgot-password endpoint's generic response and token non-disclosure were verified, but inbox delivery and clicking a real reset link were not. The reset endpoint itself and single-use behavior were tested using a test-only token fixture.
-- **Container startup:** Compose configuration was validated previously, but images and container-to-container behavior could not be exercised without a running Docker engine.
+- **Email delivery:** SMTP was not configured. Generic forgot-password behavior and OTP password fallback were verified; sending and consuming a real email code/reset link still require SMTP credentials.
+- **Browser security pages:** Production build and authenticated route rendering were checked; live inbox OTP delivery and completing an MFA authenticator enrollment were not available without SMTP/interactive TOTP setup.
 - **Test credentials:** The seeded admin account listed in the README is for local development only. Do not use the published seed credentials in a deployed environment.
 
 ## Running the checks

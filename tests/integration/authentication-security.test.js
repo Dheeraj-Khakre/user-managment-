@@ -7,6 +7,7 @@ process.env.NODE_ENV = 'test';
 
 const { describe, it, before } = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
 const app = require('../../src/app');
@@ -14,6 +15,7 @@ const { getDatabase, resetDatabase } = require('../../src/db/sqlite');
 const userRepository = require('../../src/repositories/user.repository');
 const totpUtil = require('../../src/utils/totp');
 const tokenService = require('../../src/services/token.service');
+const securityChallengeRepository = require('../../src/repositories/security-challenge.repository');
 const envConfig = require('../../src/config/env.config');
 const { ROLES } = require('../../src/constants/roles');
 
@@ -162,8 +164,10 @@ describe('Integration & Security Test Suite', () => {
       };
       const registration = await request(app).post('/api/v1/auth/register').send(credentials);
       const oldToken = registration.body.data.accessToken;
+      const stepUpToken = tokenService.generateStepUpToken(registration.body.data.user, 'password_change');
       const change = await request(app)
         .post('/api/v1/auth/change-password')
+        .set('X-Step-Up-Token', stepUpToken)
         .set('Authorization', `Bearer ${oldToken}`)
         .send({ currentPassword: credentials.password, newPassword: 'AfterChange@2026!' });
       assert.strictEqual(change.status, 200);
@@ -286,6 +290,7 @@ describe('Integration & Security Test Suite', () => {
   // =========================================================================
   describe('5. Multi-Factor Authentication (MFA) Validation', () => {
     let mfaSecret = '';
+    let mfaStepUpToken = '';
     const mfaUser = {
       name: 'MFA User',
       email: 'mfa_user@example.com',
@@ -296,11 +301,69 @@ describe('Integration & Security Test Suite', () => {
     before(async () => {
       const reg = await request(app).post('/api/v1/auth/register').send(mfaUser);
       mfaUserToken = reg.body.data.accessToken;
+      const verification = await request(app)
+        .post('/api/v1/auth/security/verify')
+        .set('Authorization', `Bearer ${mfaUserToken}`)
+        .send({ method: 'password', purpose: 'mfa_manage', password: mfaUser.password });
+      assert.strictEqual(verification.status, 200);
+      mfaStepUpToken = verification.body.data.stepUpToken;
+    });
+
+    it('requires a scoped step-up token for MFA changes', async () => {
+      const noVerification = await request(app)
+        .post('/api/v1/auth/mfa/setup')
+        .set('Authorization', `Bearer ${mfaUserToken}`)
+        .send({});
+      assert.strictEqual(noVerification.status, 403);
+
+      const wrongScope = tokenService.generateStepUpToken({ id: (await userRepository.findByEmail(mfaUser.email)).id }, 'password_change');
+      const wrongPurpose = await request(app)
+        .post('/api/v1/auth/mfa/setup')
+        .set('Authorization', `Bearer ${mfaUserToken}`)
+        .set('X-Step-Up-Token', wrongScope)
+        .send({});
+      assert.strictEqual(wrongPurpose.status, 403);
+    });
+
+    it('verifies a single-use email OTP and issues a scoped step-up token', async () => {
+      const challengeId = crypto.randomUUID();
+      const code = '482615';
+      const purpose = 'mfa_manage';
+      const codeHash = crypto.createHmac('sha256', envConfig.COOKIE_SECRET)
+        .update(`${challengeId}:${(await userRepository.findByEmail(mfaUser.email)).id}:${purpose}:${code}`)
+        .digest('hex');
+      securityChallengeRepository.create({
+        id: challengeId,
+        userId: (await userRepository.findByEmail(mfaUser.email)).id,
+        purpose,
+        codeHash,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      });
+
+      const badCode = await request(app)
+        .post('/api/v1/auth/security/verify')
+        .set('Authorization', `Bearer ${mfaUserToken}`)
+        .send({ method: 'otp', purpose, challengeId, code: '000000' });
+      assert.strictEqual(badCode.status, 401);
+
+      const verified = await request(app)
+        .post('/api/v1/auth/security/verify')
+        .set('Authorization', `Bearer ${mfaUserToken}`)
+        .send({ method: 'otp', purpose, challengeId, code });
+      assert.strictEqual(verified.status, 200);
+      assert.ok(verified.body.data.stepUpToken);
+
+      const replay = await request(app)
+        .post('/api/v1/auth/security/verify')
+        .set('Authorization', `Bearer ${mfaUserToken}`)
+        .send({ method: 'otp', purpose, challengeId, code });
+      assert.strictEqual(replay.status, 401);
     });
 
     it('should initiate MFA setup and generate a base32 secret', async () => {
       const res = await request(app)
         .post('/api/v1/auth/mfa/setup')
+        .set('X-Step-Up-Token', mfaStepUpToken)
         .set('Authorization', `Bearer ${mfaUserToken}`);
 
       assert.strictEqual(res.status, 200);
@@ -312,6 +375,7 @@ describe('Integration & Security Test Suite', () => {
     it('should reject invalid 6-digit OTP code during activation', async () => {
       const res = await request(app)
         .post('/api/v1/auth/mfa/verify')
+        .set('X-Step-Up-Token', mfaStepUpToken)
         .set('Authorization', `Bearer ${mfaUserToken}`)
         .send({ code: '000000' });
 
@@ -323,6 +387,7 @@ describe('Integration & Security Test Suite', () => {
       const validCode = totpUtil.generateCode(mfaSecret);
       const res = await request(app)
         .post('/api/v1/auth/mfa/verify')
+        .set('X-Step-Up-Token', mfaStepUpToken)
         .set('Authorization', `Bearer ${mfaUserToken}`)
         .send({ code: validCode });
 
@@ -338,12 +403,15 @@ describe('Integration & Security Test Suite', () => {
       };
       const registration = await request(app).post('/api/v1/auth/register').send(credentials);
       const token = registration.body.data.accessToken;
+      const stepUpToken = tokenService.generateStepUpToken(registration.body.data.user, 'mfa_manage');
       const res = await request(app)
         .post('/api/v1/auth/mfa/setup')
+        .set('X-Step-Up-Token', stepUpToken)
         .set('Authorization', `Bearer ${token}`);
       const secret = res.body.data.secret;
       const activation = await request(app)
         .post('/api/v1/auth/mfa/verify')
+        .set('X-Step-Up-Token', stepUpToken)
         .set('Authorization', `Bearer ${token}`)
         .send({ code: totpUtil.generateCode(secret) });
       assert.strictEqual(activation.status, 200);
@@ -351,6 +419,7 @@ describe('Integration & Security Test Suite', () => {
       const before = await userRepository.findById(registration.body.data.user.id, { includePassword: true });
       const replacement = await request(app)
         .post('/api/v1/auth/mfa/setup')
+        .set('X-Step-Up-Token', stepUpToken)
         .set('Authorization', `Bearer ${token}`);
       const after = await userRepository.findById(registration.body.data.user.id, { includePassword: true });
 
@@ -387,6 +456,7 @@ describe('Integration & Security Test Suite', () => {
     it('should disable MFA with correct password', async () => {
       const res = await request(app)
         .post('/api/v1/auth/mfa/disable')
+        .set('X-Step-Up-Token', mfaStepUpToken)
         .set('Authorization', `Bearer ${mfaUserToken}`)
         .send({ password: mfaUser.password });
 

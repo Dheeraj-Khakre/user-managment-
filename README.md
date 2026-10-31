@@ -310,6 +310,16 @@ The GitHub Actions workflow runs the backend tests and builds the frontend on pu
 
 ---
 
+## 🔒 Security Settings and Step-Up Verification
+
+The UI separates **Security settings**, **Change password**, and **Multi-factor authentication** into distinct pages. Opening either sensitive page starts a fresh, purpose-scoped identity check:
+
+- When SMTP is configured and the account email is verified, a 6-digit code is sent to that email. Codes expire in 10 minutes, can be used once, allow at most five attempts, and can be resent once per minute.
+- If email delivery is unavailable, the user can verify with their current password. This fallback is also available as an explicit choice when email OTP is available.
+- A successful check issues a five-minute token scoped to either password changes or MFA management. The API requires this token for password and MFA changes; direct API calls cannot bypass the UI check.
+
+Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, and any required `SMTP_USER`/`SMTP_PASS` values in `.env` to enable email codes. Without SMTP or a verified email, the UI clearly asks for the current password instead.
+
 ## 🔐 Multi-Factor Authentication (MFA / TOTP) Workflow
 
 1. **Initiate Setup (`POST /api/v1/auth/mfa/setup`)**:
@@ -366,13 +376,15 @@ To protect user accounts from automated credential stuffing and brute-force pass
 | `/api/v1/auth/register` | `POST` | ✅ | ✅ | ✅ | ✅ | Register a new user |
 | `/api/v1/auth/login` | `POST` | ✅ | ✅ | ✅ | ✅ | Authenticate credentials & issue tokens |
 | `/api/v1/auth/mfa/login-step2`| `POST`| ✅ | ✅ | ✅ | ✅ | Step 2 TOTP verification |
-| `/api/v1/auth/mfa/setup` | `POST` | ❌ | ✅ | ✅ | ✅ | Generate MFA secret |
-| `/api/v1/auth/mfa/verify`| `POST` | ❌ | ✅ | ✅ | ✅ | Confirm and activate MFA |
-| `/api/v1/auth/mfa/disable`| `POST`| ❌ | ✅ | ✅ | ✅ | Disable MFA with password |
+| `/api/v1/auth/security/otp` | `POST` | ❌ | ✅ | ✅ | ✅ | Request purpose-scoped email verification code |
+| `/api/v1/auth/security/verify` | `POST` | ❌ | ✅ | ✅ | ✅ | Verify email OTP or current password |
+| `/api/v1/auth/mfa/setup` | `POST` | ❌ | ✅ | ✅ | ✅ | Generate MFA secret; requires step-up token |
+| `/api/v1/auth/mfa/verify`| `POST` | ❌ | ✅ | ✅ | ✅ | Confirm and activate MFA; requires step-up token |
+| `/api/v1/auth/mfa/disable`| `POST`| ❌ | ✅ | ✅ | ✅ | Disable MFA; requires step-up token and password |
 | `/api/v1/auth/refresh-token` | `POST` | ✅ | ✅ | ✅ | ✅ | Rotate refresh token |
 | `/api/v1/auth/logout` | `POST` | ✅ | ✅ | ✅ | ✅ | Revoke refresh token |
 | `/api/v1/auth/me` | `GET` | ❌ | ✅ | ✅ | ✅ | View own user profile |
-| `/api/v1/auth/change-password`| `POST`| ❌ | ✅ | ✅ | ✅ | Change password & revoke all sessions |
+| `/api/v1/auth/change-password`| `POST`| ❌ | ✅ | ✅ | ✅ | Change password; requires step-up token and revokes sessions |
 | `/api/v1/users/profile` | `PATCH`| ❌ | ✅ | ✅ | ✅ | Self-service profile update |
 | `/api/v1/users` | `GET` | ❌ | ❌ | ✅ | ✅ | List users (pagination, search, filter) |
 | `/api/v1/users/:id` | `GET` | ❌ | Self only | ✅ | ✅ | View user by ID |
@@ -385,7 +397,7 @@ To protect user accounts from automated credential stuffing and brute-force pass
 
 ## 🧪 Automated Testing & Security Validation
 
-The repository includes a comprehensive **48-test automated testing suite** combining both isolated Unit Tests and full-stack Integration/Security Tests.
+The repository includes an automated unit and integration/security test suite. Run `npm test` for the current total.
 
 ### Running Tests
 

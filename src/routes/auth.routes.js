@@ -9,6 +9,7 @@ const authController = require('../controllers/auth.controller');
 const validate = require('../middlewares/validate.middleware');
 const { authenticate } = require('../middlewares/auth.middleware');
 const { authLimiter } = require('../middlewares/rateLimiter.middleware');
+const { requireStepUp } = require('../middlewares/step-up.middleware');
 const {
   registerSchema,
   loginSchema,
@@ -19,6 +20,8 @@ const {
   mfaLoginStep2Schema,
   verifyMfaSchema,
   disableMfaSchema,
+  requestStepUpOtpSchema,
+  verifyStepUpSchema,
 } = require('../validators/auth.validator');
 
 const router = express.Router();
@@ -36,11 +39,13 @@ router.post('/mfa/login-step2', authLimiter, validate(mfaLoginStep2Schema), auth
 
 // Protected routes requiring valid JWT access token
 router.get('/me', authenticate, authController.getMe);
-router.post('/change-password', authenticate, validate(changePasswordSchema), authController.changePassword);
+router.post('/security/otp', authLimiter, authenticate, validate(requestStepUpOtpSchema), authController.requestStepUpOtp);
+router.post('/security/verify', authLimiter, authenticate, validate(verifyStepUpSchema), authController.verifyStepUp);
+router.post('/change-password', authenticate, requireStepUp('password_change'), validate(changePasswordSchema), authController.changePassword);
 
 // MFA Management (Authenticated)
-router.post('/mfa/setup', authenticate, authController.setupMfa);
-router.post('/mfa/verify', authenticate, validate(verifyMfaSchema), authController.verifyMfa);
-router.post('/mfa/disable', authenticate, validate(disableMfaSchema), authController.disableMfa);
+router.post('/mfa/setup', authenticate, requireStepUp('mfa_manage'), authController.setupMfa);
+router.post('/mfa/verify', authenticate, requireStepUp('mfa_manage'), validate(verifyMfaSchema), authController.verifyMfa);
+router.post('/mfa/disable', authenticate, requireStepUp('mfa_manage'), validate(disableMfaSchema), authController.disableMfa);
 
 module.exports = router;

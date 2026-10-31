@@ -4,10 +4,10 @@
  */
 
 const http = require('http');
-const userRepository = require('../src/repositories/user.repository');
-const tokenService = require('../src/services/token.service');
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
+let cleanupUserId = null;
+let cleanupAdminToken = null;
 
 function request(method, path, body = null, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -63,6 +63,7 @@ async function runTests() {
   });
   assert(adminLogin.statusCode === 200 && adminLogin.data.data.accessToken, 'Admin login');
   const adminToken = adminLogin.data.data.accessToken;
+  cleanupAdminToken = adminToken;
 
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const testEmail = `e2e-${suffix}@example.com`;
@@ -72,9 +73,11 @@ async function runTests() {
     email: testEmail,
     password: testPassword,
   });
-  assert(registration.statusCode === 201 && registration.data.data.accessToken, 'User registration');
-  const userToken = registration.data.data.accessToken;
-  const userId = registration.data.data.user.id;
+  const registeredUser = registration.data?.data;
+  cleanupUserId = registeredUser?.user?.id ?? null;
+  assert(registration.statusCode === 201 && registeredUser?.accessToken, 'User registration');
+  const userToken = registeredUser.accessToken;
+  const userId = registeredUser.user.id;
 
   const invalidLogin = await request('POST', '/api/v1/auth/login', {
     email: testEmail,
@@ -137,37 +140,50 @@ async function runTests() {
   assert(forgotPassword.statusCode === 200, 'Forgot-password request');
   assert(forgotPassword.data.data.resetToken === undefined, 'Forgot-password response does not expose a reset token');
 
-  const reset = tokenService.generatePasswordResetToken();
-  await userRepository.updateAuthFields(userId, {
-    passwordResetToken: reset.hashedToken,
-    passwordResetExpires: reset.expires,
-  });
+  const missingStepUp = await request('POST', '/api/v1/auth/change-password', {
+    currentPassword: testPassword,
+    newPassword: 'E2eChanged@2026Secure!',
+  }, authorization(userToken));
+  assert(missingStepUp.statusCode === 403, 'Password change is blocked without step-up verification');
 
-  const resetPassword = await request('POST', '/api/v1/auth/reset-password', {
-    token: reset.plainToken,
-    newPassword: 'E2eReset@2026Secure!',
-  });
-  assert(resetPassword.statusCode === 200, 'Password reset with a valid one-time token');
+  const stepUp = await request('POST', '/api/v1/auth/security/verify', {
+    method: 'password',
+    purpose: 'password_change',
+    password: testPassword,
+  }, authorization(userToken));
+  assert(stepUp.statusCode === 200 && stepUp.data.data.stepUpToken, 'Password fallback issues a scoped step-up token');
 
-  const replay = await request('POST', '/api/v1/auth/reset-password', {
-    token: reset.plainToken,
-    newPassword: 'E2eReplay@2026Secure!',
+  const passwordChange = await request('POST', '/api/v1/auth/change-password', {
+    currentPassword: testPassword,
+    newPassword: 'E2eChanged@2026Secure!',
+  }, {
+    ...authorization(userToken),
+    'X-Step-Up-Token': stepUp.data.data.stepUpToken,
   });
-  assert(replay.statusCode === 400, 'Password reset token is single-use');
+  assert(passwordChange.statusCode === 200, 'Password change succeeds after step-up verification');
 
-  const resetLogin = await request('POST', '/api/v1/auth/login', {
+  const changedPasswordLogin = await request('POST', '/api/v1/auth/login', {
     email: testEmail,
-    password: 'E2eReset@2026Secure!',
+    password: 'E2eChanged@2026Secure!',
   });
-  assert(resetLogin.statusCode === 200, 'Login with reset password');
+  assert(changedPasswordLogin.statusCode === 200, 'Login succeeds with changed password');
 
   const cleanup = await request('DELETE', `/api/v1/users/${userId}`, null, authorization(adminToken));
   assert(cleanup.statusCode === 200, 'Remove temporary E2E user');
+  cleanupUserId = null;
 
   console.log('All API end-to-end checks passed.');
 }
 
-runTests().catch((error) => {
+runTests().catch(async (error) => {
+  if (cleanupUserId && cleanupAdminToken) {
+    try {
+      const cleanup = await request('DELETE', `/api/v1/users/${cleanupUserId}`, null, authorization(cleanupAdminToken));
+      if (cleanup.statusCode !== 200) console.error('Temporary E2E user cleanup failed.');
+    } catch {
+      console.error('Temporary E2E user cleanup failed.');
+    }
+  }
   console.error('API end-to-end checks failed:', error.message);
   process.exitCode = 1;
 });
