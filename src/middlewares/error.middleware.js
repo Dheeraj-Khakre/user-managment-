@@ -19,6 +19,7 @@ const { HTTP_STATUS } = require('../constants/httpStatusCodes');
  */
 const errorHandler = (err, req, res, next) => {
   let error = err;
+  const isProduction = process.env.NODE_ENV === 'production';
 
   // Handle malformed JSON body errors sent by express.json()
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
@@ -27,12 +28,10 @@ const errorHandler = (err, req, res, next) => {
 
   // If not an instance of ApiError, convert to generic internal server error
   if (!(error instanceof ApiError)) {
-    const statusCode = error.statusCode || HTTP_STATUS.INTERNAL_SERVER_ERROR;
-    const message = error.message || 'An unexpected internal error occurred';
+    const statusCode = isProduction ? HTTP_STATUS.INTERNAL_SERVER_ERROR : (error.statusCode || HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    const message = isProduction ? 'An unexpected internal error occurred.' : (error.message || 'An unexpected internal error occurred.');
     error = new ApiError(statusCode, message, [], err.stack, false);
   }
-
-  const isProduction = process.env.NODE_ENV === 'production';
 
   // Log non-operational (programming or system) errors
   if (!error.isOperational) {
@@ -50,7 +49,7 @@ const errorHandler = (err, req, res, next) => {
     statusCode: error.statusCode,
     message: error.message,
     errors: error.errors || [],
-    ...(!isProduction && { stack: error.stack }),
+    ...(!isProduction && !error.isOperational && { stack: error.stack }),
   };
 
   res.status(error.statusCode).json(responsePayload);

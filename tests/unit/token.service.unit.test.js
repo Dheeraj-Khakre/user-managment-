@@ -98,6 +98,17 @@ describe('Unit Tests: Token Service & Session Security', () => {
     );
   });
 
+  it('allows only one concurrent refresh-token rotation', async () => {
+    const { refreshToken } = await tokenService.generateRefreshToken(mockUser);
+    const results = await Promise.allSettled([
+      tokenService.rotateRefreshToken(refreshToken, mockUser),
+      tokenService.rotateRefreshToken(refreshToken, mockUser),
+    ]);
+
+    assert.strictEqual(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.strictEqual(results.filter((result) => result.status === 'rejected').length, 1);
+  });
+
   it('should issue and verify temporary MFA challenge tokens', () => {
     const mfaToken = tokenService.generateMfaToken(mockUser);
     assert.ok(mfaToken);

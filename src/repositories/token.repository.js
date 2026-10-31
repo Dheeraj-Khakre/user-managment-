@@ -94,12 +94,13 @@ class TokenRepository {
    * @returns {Promise<boolean>}
    */
   async markAsReplaced(tokenId, newTokenId) {
+    const isLogout = newTokenId === 'REVOKED_LOGOUT';
     const stmt = this.db.prepare(`
       UPDATE tokens
-      SET isRevoked = 1, replacedBy = ?, revokedAt = ?
-      WHERE id = ?
+      SET isRevoked = 1, replacedBy = ?, revokedAt = ?, revocationReason = ?
+      WHERE id = ? AND isRevoked = 0
     `);
-    const info = stmt.run(newTokenId, new Date().toISOString(), tokenId);
+    const info = stmt.run(newTokenId, new Date().toISOString(), isLogout ? 'USER_LOGOUT' : 'TOKEN_ROTATED', tokenId);
     return info.changes > 0;
   }
 

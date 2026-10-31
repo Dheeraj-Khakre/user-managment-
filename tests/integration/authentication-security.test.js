@@ -13,6 +13,7 @@ const app = require('../../src/app');
 const { getDatabase, resetDatabase } = require('../../src/db/sqlite');
 const userRepository = require('../../src/repositories/user.repository');
 const totpUtil = require('../../src/utils/totp');
+const tokenService = require('../../src/services/token.service');
 const envConfig = require('../../src/config/env.config');
 const { ROLES } = require('../../src/constants/roles');
 
@@ -76,6 +77,22 @@ describe('Integration & Security Test Suite', () => {
     userBId = userBReg.body.data.user.id;
   });
 
+  it('does not expose runtime or memory details in the public health response', async () => {
+    const res = await request(app).get('/api/v1/health');
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.data.environment, undefined);
+    assert.strictEqual(res.body.data.memoryUsageMB, undefined);
+  });
+
+  it('rejects untrusted browser origins without echoing the origin', async () => {
+    const res = await request(app)
+      .get('/api/v1/health')
+      .set('Origin', 'https://untrusted.example');
+
+    assert.strictEqual(res.status, 403);
+    assert.doesNotMatch(res.body.message, /untrusted\.example/);
+  });
+
   // =========================================================================
   // 1. Authentication Testing: Verify only valid users can access application
   // =========================================================================
@@ -124,6 +141,42 @@ describe('Integration & Security Test Suite', () => {
 
       assert.strictEqual(res.status, 200);
       assert.strictEqual(res.body.data.id, userAId);
+    });
+
+    it('does not accept refresh tokens from JavaScript-readable request bodies', async () => {
+      const user = await userRepository.findById(userAId);
+      const { refreshToken } = await tokenService.generateRefreshToken(user);
+      const res = await request(app)
+        .post('/api/v1/auth/refresh-token')
+        .send({ refreshToken });
+
+      assert.strictEqual(res.status, 401);
+      assert.strictEqual(res.body.success, false);
+    });
+
+    it('invalidates old access tokens immediately after a password change', async () => {
+      const credentials = {
+        name: 'Password Version Guard',
+        email: `password_version_${Date.now()}@example.com`,
+        password: 'BeforeChange@2026!',
+      };
+      const registration = await request(app).post('/api/v1/auth/register').send(credentials);
+      const oldToken = registration.body.data.accessToken;
+      const change = await request(app)
+        .post('/api/v1/auth/change-password')
+        .set('Authorization', `Bearer ${oldToken}`)
+        .send({ currentPassword: credentials.password, newPassword: 'AfterChange@2026!' });
+      assert.strictEqual(change.status, 200);
+
+      const staleSession = await request(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${oldToken}`);
+      assert.strictEqual(staleSession.status, 401);
+
+      const freshLogin = await request(app)
+        .post('/api/v1/auth/login')
+        .send({ email: credentials.email, password: 'AfterChange@2026!' });
+      assert.strictEqual(freshLogin.status, 200);
     });
   });
 
@@ -277,6 +330,34 @@ describe('Integration & Security Test Suite', () => {
       assert.ok(res.body.message.includes('enabled'));
     });
 
+    it('must not replace an already-enabled MFA secret through setup', async () => {
+      const credentials = {
+        name: 'MFA Replacement Guard',
+        email: `mfa_guard_${Date.now()}@example.com`,
+        password: 'MfaGuardPassword@2026!',
+      };
+      const registration = await request(app).post('/api/v1/auth/register').send(credentials);
+      const token = registration.body.data.accessToken;
+      const res = await request(app)
+        .post('/api/v1/auth/mfa/setup')
+        .set('Authorization', `Bearer ${token}`);
+      const secret = res.body.data.secret;
+      const activation = await request(app)
+        .post('/api/v1/auth/mfa/verify')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code: totpUtil.generateCode(secret) });
+      assert.strictEqual(activation.status, 200);
+
+      const before = await userRepository.findById(registration.body.data.user.id, { includePassword: true });
+      const replacement = await request(app)
+        .post('/api/v1/auth/mfa/setup')
+        .set('Authorization', `Bearer ${token}`);
+      const after = await userRepository.findById(registration.body.data.user.id, { includePassword: true });
+
+      assert.strictEqual(replacement.status, 409);
+      assert.strictEqual(after.mfaSecret, before.mfaSecret);
+    });
+
     it('should trigger Step 2 challenge on login when MFA is active', async () => {
       const step1Res = await request(app)
         .post('/api/v1/auth/login')
@@ -335,12 +416,24 @@ describe('Integration & Security Test Suite', () => {
         .send({ email: resetUser.email });
 
       assert.strictEqual(forgotRes.status, 200);
-      assert.ok(forgotRes.body.data.resetToken);
-      resetToken = forgotRes.body.data.resetToken;
+      const returnedResetToken = forgotRes.body.data.resetToken;
+
+      const reset = tokenService.generatePasswordResetToken();
+      resetToken = reset.plainToken;
+      const resetUserRecord = await userRepository.findByEmail(resetUser.email);
+      await userRepository.updateAuthFields(resetUserRecord.id, {
+        passwordResetToken: reset.hashedToken,
+        passwordResetExpires: reset.expires,
+      });
 
       // Verify DB stores hash, not plain text token
       const userInDb = await userRepository.findByEmail(resetUser.email, { includePassword: true });
       assert.notStrictEqual(userInDb.passwordResetToken, resetToken, 'Token must be hashed in DB');
+      const publicUser = userRepository.sanitizeUser(userInDb);
+      assert.strictEqual(publicUser.passwordResetExpires, undefined);
+      assert.strictEqual(publicUser.failedLoginAttempts, undefined);
+      assert.strictEqual(publicUser.lockUntil, undefined);
+      assert.strictEqual(returnedResetToken, undefined);
     });
 
     it('should reset password with valid token', async () => {
@@ -360,6 +453,27 @@ describe('Integration & Security Test Suite', () => {
 
       assert.strictEqual(reuseRes.status, 400);
       assert.ok(reuseRes.body.message.includes('invalid or has expired'));
+    });
+
+    it('allows only one concurrent use of a reset token', async () => {
+      const credentials = {
+        name: 'Concurrent Reset Guard',
+        email: `reset_race_${Date.now()}@example.com`,
+        password: 'ConcurrentReset@2026!',
+      };
+      const registration = await request(app).post('/api/v1/auth/register').send(credentials);
+      const reset = tokenService.generatePasswordResetToken();
+      const user = await userRepository.findByEmail(credentials.email);
+      await userRepository.updateAuthFields(user.id, {
+        passwordResetToken: reset.hashedToken,
+        passwordResetExpires: reset.expires,
+      });
+
+      const responses = await Promise.all([
+        request(app).post('/api/v1/auth/reset-password').send({ token: reset.plainToken, newPassword: 'ConcurrentOne@2026!' }),
+        request(app).post('/api/v1/auth/reset-password').send({ token: reset.plainToken, newPassword: 'ConcurrentTwo@2026!' }),
+      ]);
+      assert.deepStrictEqual(responses.map((response) => response.status).sort(), [200, 400]);
     });
   });
 

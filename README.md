@@ -285,6 +285,19 @@ npm start
 
 Visit **`http://localhost:5000/api-docs`** in your browser to interact with the API!
 
+### Run the frontend and backend with Docker Compose
+
+Install Docker Desktop, then from the repository root create the local environment file and start both services. Compose seeds the default accounts before starting the API:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
+
+Open **`http://localhost:5173`** for the frontend or **`http://localhost:5000/api-docs`** for the API documentation. The SQLite database is persisted in a Docker volume. Stop the services with **Ctrl+C**; run `docker compose down` to remove the containers while keeping the database volume.
+
+The GitHub Actions workflow runs the backend tests and builds the frontend on pushes and pull requests. It does not deploy or publish images.
+
 ---
 
 ## 👥 Default Seeded Credentials

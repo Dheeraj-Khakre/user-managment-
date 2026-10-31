@@ -21,7 +21,7 @@ getDatabase();
 
 const server = http.createServer(app);
 
-server.listen(envConfig.PORT, () => {
+server.listen(envConfig.PORT, envConfig.HOST, () => {
   logger.info(`🚀 Server running in [${envConfig.NODE_ENV}] mode on http://${envConfig.HOST}:${envConfig.PORT}`);
   logger.info(`📖 Swagger UI documentation available at: http://${envConfig.HOST}:${envConfig.PORT}/api-docs`);
   logger.info(`🛡️  Security layers initialized: Helmet, CORS, RateLimiting, HPP, Zod, SQLite DB`);

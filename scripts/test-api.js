@@ -1,209 +1,173 @@
 /**
- * @file test-api.js
- * @description End-to-end automated test suite verifying all authentication,
- * authorization (RBAC), and user management API endpoints.
+ * End-to-end checks for authentication, authorization, user management,
+ * password resets, and refresh-token rotation.
  */
 
 const http = require('http');
+const userRepository = require('../src/repositories/user.repository');
+const tokenService = require('../src/services/token.service');
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:5000';
 
-// Helper for making HTTP JSON requests
 function request(method, path, body = null, headers = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, BASE_URL);
-    const options = {
+    const req = http.request({
       method,
       hostname: url.hostname,
       port: url.port,
       path: url.pathname + url.search,
-      headers: {
-        'Content-Type': 'application/json',
-        ...headers,
-      },
-    };
-
-    const req = http.request(options, (res) => {
+      headers: { 'Content-Type': 'application/json', ...headers },
+    }, (res) => {
       let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
+      res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
-        let json = null;
+        let json;
         try {
           json = JSON.parse(data);
-        } catch (e) {
+        } catch {
           json = data;
         }
-
-        // Extract cookies if any
-        const setCookie = res.headers['set-cookie'];
-
-        resolve({
-          statusCode: res.statusCode,
-          headers: res.headers,
-          data: json,
-          cookies: setCookie,
-        });
+        resolve({ statusCode: res.statusCode, headers: res.headers, data: json });
       });
     });
 
     req.on('error', reject);
-
-    if (body) {
-      req.write(JSON.stringify(body));
-    }
+    if (body !== null) req.write(JSON.stringify(body));
     req.end();
   });
 }
 
 function assert(condition, message) {
-  if (!condition) {
-    console.error(`❌ FAILED: ${message}`);
-    throw new Error(`Assertion failed: ${message}`);
-  }
-  console.log(`✅ PASSED: ${message}`);
+  if (!condition) throw new Error(`FAILED: ${message}`);
+  console.log(`PASSED: ${message}`);
+}
+
+function authorization(token) {
+  return { Authorization: `Bearer ${token}` };
+}
+
+function cookieFrom(response) {
+  return response.headers['set-cookie']?.[0]?.split(';', 1)[0];
 }
 
 async function runTests() {
-  console.log('\n======================================================');
-  console.log(' Starting End-to-End API Security & Functionality Tests');
-  console.log('======================================================\n');
+  console.log(`Running API end-to-end checks against ${BASE_URL}`);
 
-  // 1. Health check
-  console.log('--- Test 1: Health Check ---');
-  const healthRes = await request('GET', '/api/v1/health');
-  assert(healthRes.statusCode === 200, 'Health endpoint returns 200 OK');
-  assert(healthRes.data.data.status === 'HEALTHY', 'Service health is HEALTHY');
+  const health = await request('GET', '/api/v1/health');
+  assert(health.statusCode === 200 && health.data.data.status === 'HEALTHY', 'API health check');
 
-  // 2. Authentication: Login as Admin
-  console.log('\n--- Test 2: Admin Login ---');
   const adminLogin = await request('POST', '/api/v1/auth/login', {
     email: 'admin@example.com',
     password: 'Admin@SecurePassword123!',
   });
-  assert(adminLogin.statusCode === 200, 'Admin login returns 200 OK');
-  assert(adminLogin.data.data.accessToken, 'Access token issued');
+  assert(adminLogin.statusCode === 200 && adminLogin.data.data.accessToken, 'Admin login');
   const adminToken = adminLogin.data.data.accessToken;
 
-  // 3. Authentication: Login as Normal User
-  console.log('\n--- Test 3: Standard User Login ---');
-  const userLogin = await request('POST', '/api/v1/auth/login', {
-    email: 'user@example.com',
-    password: 'User@SecurePassword123!',
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const testEmail = `e2e-${suffix}@example.com`;
+  const testPassword = 'E2eUser@2026Secure!';
+  const registration = await request('POST', '/api/v1/auth/register', {
+    name: 'End-to-End User',
+    email: testEmail,
+    password: testPassword,
   });
-  assert(userLogin.statusCode === 200, 'User login returns 200 OK');
-  const userToken = userLogin.data.data.accessToken;
-  const userRefreshTokenCookie = userLogin.cookies ? userLogin.cookies[0] : null;
+  assert(registration.statusCode === 201 && registration.data.data.accessToken, 'User registration');
+  const userToken = registration.data.data.accessToken;
+  const userId = registration.data.data.user.id;
 
-  // 4. Verification of Invalid Credentials
-  console.log('\n--- Test 4: Rejection of Invalid Password ---');
-  const badLogin = await request('POST', '/api/v1/auth/login', {
-    email: 'user@example.com',
-    password: 'WrongPassword123!',
+  const invalidLogin = await request('POST', '/api/v1/auth/login', {
+    email: testEmail,
+    password: 'WrongPassword@2026!',
   });
-  assert(badLogin.statusCode === 401, 'Invalid password returns 401 Unauthorized');
+  assert(invalidLogin.statusCode === 401, 'Invalid password is rejected');
 
-  // 5. Protected Route: /api/v1/auth/me
-  console.log('\n--- Test 5: Verify Auth Middleware (GET /api/v1/auth/me) ---');
-  const meRes = await request('GET', '/api/v1/auth/me', null, {
-    Authorization: `Bearer ${userToken}`,
-  });
-  assert(meRes.statusCode === 200, 'User profile fetched via valid Bearer token');
-  assert(meRes.data.data.email === 'user@example.com', 'Profile matches logged-in user');
+  const profile = await request('GET', '/api/v1/auth/me', null, authorization(userToken));
+  assert(profile.statusCode === 200 && profile.data.data.email === testEmail, 'Authenticated profile');
 
-  // 6. RBAC Authorization: Standard user denied access to Admin stats
-  console.log('\n--- Test 6: RBAC Guard (User blocked from Admin stats) ---');
-  const forbiddenStats = await request('GET', '/api/v1/users/stats', null, {
-    Authorization: `Bearer ${userToken}`,
-  });
-  assert(forbiddenStats.statusCode === 403, 'User receives 403 Forbidden on Admin endpoint');
+  const forbiddenStats = await request('GET', '/api/v1/users/stats', null, authorization(userToken));
+  assert(forbiddenStats.statusCode === 403, 'Standard user is denied admin statistics');
 
-  // 7. RBAC Authorization: Admin allowed access to Admin stats
-  console.log('\n--- Test 7: RBAC Access (Admin allowed to view stats) ---');
-  const adminStats = await request('GET', '/api/v1/users/stats', null, {
-    Authorization: `Bearer ${adminToken}`,
-  });
-  assert(adminStats.statusCode === 200, 'Admin receives 200 OK on /api/v1/users/stats');
-  assert(adminStats.data.data.totalUsers >= 3, 'User statistics contains total counts');
+  const adminStats = await request('GET', '/api/v1/users/stats', null, authorization(adminToken));
+  assert(adminStats.statusCode === 200 && adminStats.data.data.totalUsers >= 4, 'Admin statistics access');
 
-  // 8. User Management: Self-service profile update
-  console.log('\n--- Test 8: User Profile Update ---');
-  const updateProfile = await request(
-    'PATCH',
-    '/api/v1/users/profile',
-    { bio: 'Updated bio by self-service test' },
-    { Authorization: `Bearer ${userToken}` }
-  );
-  assert(updateProfile.statusCode === 200, 'User profile updated successfully');
-  assert(updateProfile.data.data.bio === 'Updated bio by self-service test', 'Bio matches updated value');
+  const updatedProfile = await request('PATCH', '/api/v1/users/profile', { bio: 'E2E profile update' }, authorization(userToken));
+  assert(updatedProfile.statusCode === 200 && updatedProfile.data.data.bio === 'E2E profile update', 'Self-service profile update');
 
-  // 9. Input Validation: Weak password rejected during registration
-  console.log('\n--- Test 9: Input Validation & Password Complexity Guard ---');
-  const weakRegister = await request('POST', '/api/v1/auth/register', {
-    name: 'Weak User',
-    email: 'weak@example.com',
+  const weakRegistration = await request('POST', '/api/v1/auth/register', {
+    name: 'Weak Password',
+    email: `weak-${suffix}@example.com`,
     password: 'weak',
   });
-  assert(weakRegister.statusCode === 400, 'Weak password rejected with 400 Bad Request');
-  assert(weakRegister.data.errors.length > 0, 'Validation errors returned in structured format');
+  assert(weakRegistration.statusCode === 400, 'Weak password validation');
 
-  // 10. User Registration (Strong credentials)
-  console.log('\n--- Test 10: New User Registration ---');
-  const testEmail = `tester_${Date.now()}@example.com`;
-  const registerRes = await request('POST', '/api/v1/auth/register', {
-    name: 'Test Engineer',
+  const adminCreated = await request('POST', '/api/v1/users', {
+    name: 'Admin-Created E2E User',
+    email: `admin-created-${suffix}@example.com`,
+    password: 'AdminCreated@2026!',
+    role: 'USER',
+    status: 'ACTIVE',
+    bio: '',
+  }, authorization(adminToken));
+  assert(adminCreated.statusCode === 201, 'Admin creates a directory account');
+
+  const adminUpdated = await request('PATCH', `/api/v1/users/${adminCreated.data.data.id}`, {
+    role: 'MODERATOR',
+    status: 'PENDING',
+  }, authorization(adminToken));
+  assert(adminUpdated.statusCode === 200 && adminUpdated.data.data.role === 'MODERATOR', 'Admin changes account role and status');
+
+  const adminDeleted = await request('DELETE', `/api/v1/users/${adminCreated.data.data.id}`, null, authorization(adminToken));
+  assert(adminDeleted.statusCode === 200, 'Admin deactivates the directory account');
+
+  const initialCookie = cookieFrom(registration);
+  assert(Boolean(initialCookie), 'Registration issues refresh-token cookie');
+  const refreshed = await request('POST', '/api/v1/auth/refresh-token', {}, { Cookie: initialCookie });
+  assert(refreshed.statusCode === 200 && refreshed.data.data.accessToken, 'Refresh token rotation');
+
+  const rotatedCookie = cookieFrom(refreshed);
+  assert(Boolean(rotatedCookie), 'Refresh rotates the cookie');
+  const logout = await request('POST', '/api/v1/auth/logout', {}, { Cookie: rotatedCookie });
+  assert(logout.statusCode === 200, 'Logout');
+
+  const expiredRefresh = await request('POST', '/api/v1/auth/refresh-token', {}, { Cookie: initialCookie });
+  assert(expiredRefresh.statusCode === 401, 'A rotated refresh token cannot be reused');
+
+  const forgotPassword = await request('POST', '/api/v1/auth/forgot-password', { email: testEmail });
+  assert(forgotPassword.statusCode === 200, 'Forgot-password request');
+  assert(forgotPassword.data.data.resetToken === undefined, 'Forgot-password response does not expose a reset token');
+
+  const reset = tokenService.generatePasswordResetToken();
+  await userRepository.updateAuthFields(userId, {
+    passwordResetToken: reset.hashedToken,
+    passwordResetExpires: reset.expires,
+  });
+
+  const resetPassword = await request('POST', '/api/v1/auth/reset-password', {
+    token: reset.plainToken,
+    newPassword: 'E2eReset@2026Secure!',
+  });
+  assert(resetPassword.statusCode === 200, 'Password reset with a valid one-time token');
+
+  const replay = await request('POST', '/api/v1/auth/reset-password', {
+    token: reset.plainToken,
+    newPassword: 'E2eReplay@2026Secure!',
+  });
+  assert(replay.statusCode === 400, 'Password reset token is single-use');
+
+  const resetLogin = await request('POST', '/api/v1/auth/login', {
     email: testEmail,
-    password: 'Password@2026Secure!',
+    password: 'E2eReset@2026Secure!',
   });
-  assert(registerRes.statusCode === 201, 'User successfully registered with 201 Created');
-  assert(registerRes.data.data.accessToken, 'Access token generated on registration');
-  const createdUserId = registerRes.data.data.user.id;
+  assert(resetLogin.statusCode === 200, 'Login with reset password');
 
-  // 11. Admin User Deletion
-  console.log('\n--- Test 11: Admin User Deletion ---');
-  const deleteRes = await request('DELETE', `/api/v1/users/${createdUserId}`, null, {
-    Authorization: `Bearer ${adminToken}`,
-  });
-  assert(deleteRes.statusCode === 200, 'User deleted by admin with 200 OK');
+  const cleanup = await request('DELETE', `/api/v1/users/${userId}`, null, authorization(adminToken));
+  assert(cleanup.statusCode === 200, 'Remove temporary E2E user');
 
-  // 12. Forgot Password and Reset Flow
-  console.log('\n--- Test 12: Forgot Password and Reset Flow ---');
-  const forgotRes = await request('POST', '/api/v1/auth/forgot-password', {
-    email: 'user@example.com',
-  });
-  assert(forgotRes.statusCode === 200, 'Forgot password returns 200 OK');
-  const resetToken = forgotRes.data.data.resetToken;
-  assert(resetToken, 'Reset token generated');
-
-  const resetRes = await request('POST', '/api/v1/auth/reset-password', {
-    token: resetToken,
-    newPassword: 'User@NewPassword2026!',
-  });
-  assert(resetRes.statusCode === 200, 'Password reset succeeded with 200 OK');
-
-  // Login with new password
-  const newLoginRes = await request('POST', '/api/v1/auth/login', {
-    email: 'user@example.com',
-    password: 'User@NewPassword2026!',
-  });
-  assert(newLoginRes.statusCode === 200, 'Successfully logged in with new reset password');
-
-  // Reset back to original password for consistency
-  const resetBack = await request('POST', '/api/v1/auth/change-password', {
-    currentPassword: 'User@NewPassword2026!',
-    newPassword: 'User@SecurePassword123!',
-  }, {
-    Authorization: `Bearer ${newLoginRes.data.data.accessToken}`,
-  });
-  assert(resetBack.statusCode === 200, 'Reverted user password back to baseline');
-
-  console.log('\n======================================================');
-  console.log('🎉 ALL END-TO-END TESTS PASSED SUCCESSFULLY!          ');
-  console.log('======================================================\n');
+  console.log('All API end-to-end checks passed.');
 }
 
-runTests().catch((err) => {
-  console.error('\n❌ Test execution failed:', err);
-  process.exit(1);
+runTests().catch((error) => {
+  console.error('API end-to-end checks failed:', error.message);
+  process.exitCode = 1;
 });

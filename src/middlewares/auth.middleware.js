@@ -48,18 +48,22 @@ const authenticate = async (req, res, next) => {
     const decoded = tokenService.verifyAccessToken(token);
 
     // Verify user still exists in database
-    const user = await userRepository.findById(decoded.sub);
-    if (!user) {
+    const userRecord = await userRepository.findById(decoded.sub, { includePassword: true });
+    if (!userRecord) {
       throw ApiError.unauthorized('User associated with this token no longer exists.');
     }
 
+    if ((decoded.pwdv ?? null) !== (userRecord.passwordChangedAt ?? null)) {
+      throw ApiError.unauthorized('Session has been invalidated. Please log in again.');
+    }
+
     // Check account status
-    if (user.status === 'SUSPENDED') {
+    if (userRecord.status === 'SUSPENDED') {
       throw ApiError.forbidden('Your account has been suspended. Please contact administration.');
     }
 
     // Attach authenticated user to request context
-    req.user = user;
+    req.user = userRepository.sanitizeUser(userRecord);
     next();
   } catch (error) {
     next(error);
