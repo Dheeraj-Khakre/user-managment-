@@ -329,6 +329,9 @@ a { color: inherit; text-decoration: none; }
 .enrollment-step > div { display: grid; gap: 4px; }
 .enrollment-step strong { font-size: 10px; }
 .enrollment-step p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.mfa-qr-code { display: grid; justify-items: center; gap: 8px; width: fit-content; max-width: 100%; margin: 0 auto; padding: 12px; border: 1px solid var(--border); border-radius: 5px; background: #fff; }
+.mfa-qr-code img { display: block; width: min(196px, 100%); height: auto; image-rendering: pixelated; }
+.mfa-qr-code span { color: var(--muted); font-size: 9px; }
 .secret-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 7px 6px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-raised); }
 .secret-field code { overflow: hidden; color: var(--text); font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-overflow: ellipsis; }
 .otpauth-link { justify-self: start; }

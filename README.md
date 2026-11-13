@@ -314,11 +314,12 @@ The GitHub Actions workflow runs the backend tests and builds the frontend on pu
 
 The UI separates **Security settings**, **Change password**, and **Multi-factor authentication** into distinct pages. Opening either sensitive page starts a fresh, purpose-scoped identity check:
 
-- When SMTP is configured and the account email is verified, a 6-digit code is sent to that email. Codes expire in 10 minutes, can be used once, allow at most five attempts, and can be resent once per minute.
+- New accounts receive an email-verification code after registration. Existing unverified accounts can request a code from their profile. Codes expire in 10 minutes, can be used once, allow at most five attempts, and can be resent once per minute.
+- Once the email address is verified, a 6-digit code is sent for each sensitive security check. Codes are scoped to the requested action.
 - If email delivery is unavailable, the user can verify with their current password. This fallback is also available as an explicit choice when email OTP is available.
 - A successful check issues a five-minute token scoped to either password changes or MFA management. The API requires this token for password and MFA changes; direct API calls cannot bypass the UI check.
 
-Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, and any required `SMTP_USER`/`SMTP_PASS` values in `.env` to enable email codes. Without SMTP or a verified email, the UI clearly asks for the current password instead.
+Docker Compose starts a local Mailpit inbox at [http://localhost:8025](http://localhost:8025), and configures the API to send mail to it by default. For direct local runs or production, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM`, and any required `SMTP_USER`/`SMTP_PASS` values in `.env`. Without a working SMTP server, the UI clearly reports that email delivery is unavailable and retains password verification as a fallback for sensitive settings.
 
 ## 🔐 Multi-Factor Authentication (MFA / TOTP) Workflow
 
@@ -378,6 +379,8 @@ To protect user accounts from automated credential stuffing and brute-force pass
 | `/api/v1/auth/mfa/login-step2`| `POST`| ✅ | ✅ | ✅ | ✅ | Step 2 TOTP verification |
 | `/api/v1/auth/security/otp` | `POST` | ❌ | ✅ | ✅ | ✅ | Request purpose-scoped email verification code |
 | `/api/v1/auth/security/verify` | `POST` | ❌ | ✅ | ✅ | ✅ | Verify email OTP or current password |
+| `/api/v1/auth/email/verification/otp` | `POST` | ❌ | ✅ | ✅ | ✅ | Send a code to verify the authenticated user's email |
+| `/api/v1/auth/email/verification/verify` | `POST` | ❌ | ✅ | ✅ | ✅ | Verify the authenticated user's email with a single-use code |
 | `/api/v1/auth/mfa/setup` | `POST` | ❌ | ✅ | ✅ | ✅ | Generate MFA secret; requires step-up token |
 | `/api/v1/auth/mfa/verify`| `POST` | ❌ | ✅ | ✅ | ✅ | Confirm and activate MFA; requires step-up token |
 | `/api/v1/auth/mfa/disable`| `POST`| ❌ | ✅ | ✅ | ✅ | Disable MFA; requires step-up token and password |

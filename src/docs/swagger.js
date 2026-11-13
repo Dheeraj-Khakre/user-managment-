@@ -161,6 +161,45 @@ Account Lockout Protection, and SQLite Persistence.
         },
       },
     },
+    '/api/v1/auth/email/verification/otp': {
+      post: {
+        tags: ['Authentication'],
+        summary: 'Send an email verification code',
+        description: 'Sends a single-use 6-digit code to the authenticated user’s unverified email address.',
+        security: [{ BearerAuth: [] }],
+        responses: {
+          200: { description: 'Verification code sent or email delivery unavailable' },
+          401: { description: 'Unauthorized' },
+          429: { description: 'A code was recently sent or the rate limit was exceeded' },
+        },
+      },
+    },
+    '/api/v1/auth/email/verification/verify': {
+      post: {
+        tags: ['Authentication'],
+        summary: 'Verify the authenticated user’s email address',
+        security: [{ BearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['challengeId', 'code'],
+                properties: {
+                  challengeId: { type: 'string', format: 'uuid' },
+                  code: { type: 'string', pattern: '^\\d{6}$', example: '123456' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'Email address verified successfully' },
+          401: { description: 'Verification code is invalid or expired' },
+        },
+      },
+    },
     '/api/v1/auth/mfa/login-step2': {
       post: {
         tags: ['MFA'],
@@ -193,7 +232,35 @@ Account Lockout Protection, and SQLite Persistence.
         summary: 'Initiate MFA Setup',
         security: [{ BearerAuth: [] }],
         responses: {
-          200: { description: 'MFA secret and otpauth URL generated' },
+          200: {
+            description: 'MFA secret, otpauth URL, and QR code data URL generated',
+            headers: {
+              'Cache-Control': {
+                description: 'Enrollment credentials must not be cached',
+                schema: { type: 'string', example: 'no-store' },
+              },
+            },
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    statusCode: { type: 'integer', example: 200 },
+                    message: { type: 'string' },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        secret: { type: 'string', description: 'Base32 TOTP secret; keep private' },
+                        otpAuthUrl: { type: 'string', example: 'otpauth://totp/SecureUserAPI:user@example.com?secret=...' },
+                        qrCodeDataUrl: { type: 'string', description: 'PNG QR code data URL containing the otpauth URL' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
           401: { description: 'Unauthorized' },
         },
       },

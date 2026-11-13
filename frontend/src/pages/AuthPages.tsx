@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, Fingerprint, KeyRound, ShieldCheck, UserRound, X
 import { ApiClientError, request } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { useToast } from '../components/ui';
+import { EmailVerificationPanel } from '../components/EmailVerificationPanel';
 
 type AuthMode = 'login' | 'register' | 'forgot' | 'reset';
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -61,6 +62,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [resetToken, setResetToken] = useState(searchParams.get('token') ?? '');
   const [resetComplete, setResetComplete] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [emailVerificationPending, setEmailVerificationPending] = useState(false);
 
   useEffect(() => {
     if (mode === 'reset' && searchParams.has('token')) {
@@ -114,8 +116,8 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         navigate('/', { replace: true });
       } else if (mode === 'register') {
         await signUp({ name: name.trim(), email: email.trim(), password });
-        notify('Your account is ready.');
-        navigate('/', { replace: true });
+        setEmailVerificationPending(true);
+        return;
       } else if (mode === 'forgot') {
         await request<{ message: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email: email.trim() }), retryAuth: false });
         setSubmitted(true);
@@ -137,6 +139,12 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         <div className="auth-success" role="status"><span className="success-mark"><ShieldCheck size={23} /></span><h3>Check your inbox</h3><p>If an account matches that email, reset instructions will be sent through the configured delivery channel.</p><Link className="button button-primary button-full" to="/login"><ArrowLeft size={16} />Back to sign in</Link></div>
       ) : mode === 'reset' && resetComplete ? (
         <div className="auth-success" role="status"><span className="success-mark"><ShieldCheck size={23} /></span><h3>Password updated</h3><p>Your password has been reset. Sign in with your new credentials.</p><Link className="button button-primary button-full" to="/login">Continue to sign in<ArrowRight size={16} /></Link></div>
+      ) : mode === 'register' && emailVerificationPending ? (
+        <EmailVerificationPanel
+          autoStart
+          onVerified={() => { notify('Your email has been verified.'); navigate('/', { replace: true }); }}
+          onContinue={() => { notify('Your account is ready. Verify your email later from your profile.'); navigate('/', { replace: true }); }}
+        />
       ) : (
         <form className="auth-form" onSubmit={submit} noValidate>
           {mode === 'login' && showMfa ? <>

@@ -72,11 +72,18 @@ export type LoginResponseData = LoginSuccessData | MfaChallengeData;
 export interface MfaSetupData {
   secret: string;
   otpAuthUrl: string;
+  qrCodeDataUrl: string;
 }
 
 export type StepUpPurpose = 'password_change' | 'mfa_manage';
 
 export interface StepUpOtpData {
+  deliveryAvailable: boolean;
+  challengeId: string | null;
+  expiresInSeconds: number;
+}
+
+export interface EmailVerificationOtpData {
   deliveryAvailable: boolean;
   challengeId: string | null;
   expiresInSeconds: number;

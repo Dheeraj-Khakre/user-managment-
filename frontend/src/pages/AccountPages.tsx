@@ -5,6 +5,7 @@ import { ApiClientError, request } from '../api/client';
 import { isMfaSetup, isStepUpOtpData, isStepUpVerifyData, isUser } from '../api/guards';
 import { useAuth } from '../auth/AuthProvider';
 import { PageHeading, useToast } from '../components/ui';
+import { EmailVerificationPanel } from '../components/EmailVerificationPanel';
 import type { MfaSetupData, StepUpPurpose, User } from '../types';
 
 const strongPassword = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^()_+\-=[\]{};':"\\|,.<>/~`])[A-Za-z\d@$!%*?&#^()_+\-=[\]{};':"\\|,.<>/~`]{8,128}$/;
@@ -197,6 +198,7 @@ export function ProfilePage() {
   return (
     <>
       <PageHeading eyebrow="ACCOUNT / PROFILE" title="Your profile" description="Manage the personal details attached to your account." />
+      {user && !user.isEmailVerified && <EmailVerificationPanel />}
       <div className="account-page-grid">
         <form className="panel form-panel" onSubmit={save} noValidate>
           <div className="form-section-title"><span><UserRound size={17} /></span><div><h2>Personal details</h2><p>Only your name and bio can be edited here.</p></div></div>
@@ -376,9 +378,13 @@ export function MfaPage() {
               <div className="mfa-empty"><div className="mfa-empty-mark"><KeyRound size={22} /></div><div><strong>Set up an authenticator</strong><p>Use an authenticator app to generate secure, time-based sign-in codes. Your setup key is shown only during enrollment.</p></div><button className="button button-primary" onClick={() => void beginMfaSetup(token)} disabled={busy}>{busy ? 'Preparing…' : 'Set up authenticator'}</button></div>
             ) : (
               <form className="mfa-enrollment" onSubmit={(event) => void verifyMfa(event, token)}>
-                <div className="enrollment-step"><span>1</span><div><strong>Add this account to your authenticator</strong><p>Enter the setup key manually. Keep it private.</p></div></div>
+                <div className="enrollment-step"><span>1</span><div><strong>Scan this code with your authenticator app</strong><p>Keep this QR code and setup key private.</p></div></div>
+                <div className="mfa-qr-code">
+                  <img src={mfaSetup.qrCodeDataUrl} width="196" height="196" alt="Authenticator setup QR code" />
+                  <span>Scan with your authenticator app</span>
+                </div>
                 <div className="secret-field"><code>{mfaSetup.secret}</code><button className="icon-button" type="button" onClick={() => void copySecret()} aria-label="Copy MFA setup key" title="Copy setup key">{copied ? <Check size={16} /> : <Copy size={16} />}</button></div>
-                <a className="text-link otpauth-link" href={mfaSetup.otpAuthUrl}>Open authenticator link</a>
+                <a className="text-link otpauth-link" href={mfaSetup.otpAuthUrl}>Can’t scan? Open authenticator link</a>
                 <div className="enrollment-step"><span>2</span><div><strong>Verify the 6-digit code</strong><p>Enrollment is not active until this code is accepted.</p></div></div>
                 <label className="field"><span>Authenticator code</span><input autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} required /></label>
                 <button className="button button-primary" disabled={busy}>{busy ? 'Verifying…' : 'Verify and enable'}</button>

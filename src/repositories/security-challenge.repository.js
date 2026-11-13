@@ -67,6 +67,13 @@ class SecurityChallengeRepository {
       WHERE id = ? AND userId = ? AND consumedAt IS NULL
     `).run(new Date().toISOString(), id, userId).changes === 1;
   }
+
+  delete(id, userId) {
+    return this.db.prepare(`
+      DELETE FROM security_otp_challenges
+      WHERE id = ? AND userId = ? AND consumedAt IS NULL
+    `).run(id, userId).changes === 1;
+  }
 }
 
 module.exports = new SecurityChallengeRepository();

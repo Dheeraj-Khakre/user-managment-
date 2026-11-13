@@ -85,7 +85,8 @@ class AuthController {
    */
   setupMfa = asyncHandler(async (req, res) => {
     const result = await authService.setupMfa(req.user.id);
-    return ApiResponse.ok(res, result, 'MFA secret generated. Scan QR or enter secret in your authenticator app.');
+    res.set('Cache-Control', 'no-store');
+    return ApiResponse.ok(res, result, 'MFA secret and QR code generated. Scan the code or enter the secret in your authenticator app.');
   });
 
   /**
@@ -165,6 +166,22 @@ class AuthController {
         ? 'A verification code has been sent to your verified email address.'
         : 'Email verification is unavailable. Use your current password to continue.'
     );
+  });
+
+  requestEmailVerificationOtp = asyncHandler(async (req, res) => {
+    const result = await securityService.requestEmailVerificationOtp(req.user.id);
+    return ApiResponse.ok(
+      res,
+      result,
+      result.deliveryAvailable
+        ? 'A verification code has been sent to your email address.'
+        : 'Email verification is unavailable. Configure email delivery and try again.'
+    );
+  });
+
+  verifyEmail = asyncHandler(async (req, res) => {
+    const user = await securityService.verifyEmail(req.user.id, req.body.challengeId, req.body.code);
+    return ApiResponse.ok(res, user, 'Email address verified successfully.');
   });
 
   verifyStepUp = asyncHandler(async (req, res) => {

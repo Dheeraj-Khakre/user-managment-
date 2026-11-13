@@ -50,7 +50,13 @@ async function sendSecurityCodeEmail(email, code, purpose) {
   const activeTransport = getTransport();
   if (!activeTransport) return false;
 
-  const action = purpose === 'password_change' ? 'change your password' : 'manage multi-factor authentication';
+  const action = {
+    email_verification: 'verify your email address',
+    password_change: 'change your password',
+    mfa_manage: 'manage multi-factor authentication',
+  }[purpose];
+  if (!action) throw new Error('Unsupported security code purpose.');
+
   await activeTransport.sendMail({
     from: envConfig.SMTP_FROM,
     to: email,
