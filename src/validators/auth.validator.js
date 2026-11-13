@@ -133,6 +133,17 @@ const requestStepUpOtpSchema = z.object({
   }),
 });
 
+const requestEmailVerificationOtpSchema = z.object({
+  body: z.object({}),
+});
+
+const verifyEmailVerificationSchema = z.object({
+  body: z.object({
+    challengeId: z.string().uuid(),
+    code: z.string().regex(/^\d{6}$/, 'Verification code must be exactly 6 numeric digits'),
+  }),
+});
+
 const verifyStepUpSchema = z.object({
   body: z.discriminatedUnion('method', [
     z.object({
@@ -160,6 +171,8 @@ module.exports = {
   verifyMfaSchema,
   disableMfaSchema,
   requestStepUpOtpSchema,
+  requestEmailVerificationOtpSchema,
+  verifyEmailVerificationSchema,
   verifyStepUpSchema,
   passwordConstraint,
 };

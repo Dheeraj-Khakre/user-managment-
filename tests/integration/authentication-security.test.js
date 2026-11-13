@@ -16,6 +16,7 @@ const userRepository = require('../../src/repositories/user.repository');
 const totpUtil = require('../../src/utils/totp');
 const tokenService = require('../../src/services/token.service');
 const securityChallengeRepository = require('../../src/repositories/security-challenge.repository');
+const emailService = require('../../src/services/email.service');
 const envConfig = require('../../src/config/env.config');
 const { ROLES } = require('../../src/constants/roles');
 
@@ -325,6 +326,86 @@ describe('Integration & Security Test Suite', () => {
       assert.strictEqual(wrongPurpose.status, 403);
     });
 
+    it('sends email OTPs to unverified users and enables security verification after confirmation', async () => {
+      const credentials = {
+        name: 'Email Verification User',
+        email: 'email_verification@example.com',
+        password: 'EmailVerify@123!',
+      };
+      const registration = await request(app).post('/api/v1/auth/register').send(credentials);
+      assert.strictEqual(registration.status, 201);
+      const token = registration.body.data.accessToken;
+      const userId = registration.body.data.user.id;
+      assert.strictEqual(registration.body.data.user.isEmailVerified, false);
+
+      const wasConfigured = emailService.isConfigured;
+      const sendSecurityCode = emailService.sendSecurityCodeEmail;
+      let deliveredCode = '';
+      let deliveredPurpose = '';
+      try {
+        emailService.isConfigured = () => false;
+        const unavailable = await request(app)
+          .post('/api/v1/auth/email/verification/otp')
+          .set('Authorization', `Bearer ${token}`)
+          .send({});
+        assert.strictEqual(unavailable.status, 200);
+        assert.strictEqual(unavailable.body.data.deliveryAvailable, false);
+
+        emailService.isConfigured = () => true;
+        emailService.sendSecurityCodeEmail = async (email, code, purpose) => {
+          assert.strictEqual(email, credentials.email);
+          deliveredCode = code;
+          deliveredPurpose = purpose;
+          return true;
+        };
+
+        const requestCode = await request(app)
+          .post('/api/v1/auth/email/verification/otp')
+          .set('Authorization', `Bearer ${token}`)
+          .send({});
+        assert.strictEqual(requestCode.status, 200);
+        assert.strictEqual(requestCode.body.data.deliveryAvailable, true);
+        assert.strictEqual(deliveredPurpose, 'email_verification');
+
+        const invalidCode = await request(app)
+          .post('/api/v1/auth/email/verification/verify')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ challengeId: requestCode.body.data.challengeId, code: '000000' });
+        assert.strictEqual(invalidCode.status, 401);
+
+        const verified = await request(app)
+          .post('/api/v1/auth/email/verification/verify')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ challengeId: requestCode.body.data.challengeId, code: deliveredCode });
+        assert.strictEqual(verified.status, 200);
+        assert.strictEqual(verified.body.data.isEmailVerified, true);
+        assert.strictEqual((await userRepository.findById(userId)).isEmailVerified, true);
+
+        const stepUpRequest = await request(app)
+          .post('/api/v1/auth/security/otp')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ purpose: 'mfa_manage' });
+        assert.strictEqual(stepUpRequest.status, 200);
+        assert.strictEqual(stepUpRequest.body.data.deliveryAvailable, true);
+        assert.strictEqual(deliveredPurpose, 'mfa_manage');
+
+        const stepUpVerified = await request(app)
+          .post('/api/v1/auth/security/verify')
+          .set('Authorization', `Bearer ${token}`)
+          .send({
+            method: 'otp',
+            purpose: 'mfa_manage',
+            challengeId: stepUpRequest.body.data.challengeId,
+            code: deliveredCode,
+          });
+        assert.strictEqual(stepUpVerified.status, 200);
+        assert.ok(stepUpVerified.body.data.stepUpToken);
+      } finally {
+        emailService.isConfigured = wasConfigured;
+        emailService.sendSecurityCodeEmail = sendSecurityCode;
+      }
+    });
+
     it('verifies a single-use email OTP and issues a scoped step-up token', async () => {
       const challengeId = crypto.randomUUID();
       const code = '482615';
@@ -367,8 +448,14 @@ describe('Integration & Security Test Suite', () => {
         .set('Authorization', `Bearer ${mfaUserToken}`);
 
       assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.headers['cache-control'], 'no-store');
       assert.ok(res.body.data.secret, 'MFA secret must be returned');
       assert.ok(res.body.data.otpAuthUrl.startsWith('otpauth://totp/'));
+      assert.strictEqual(new URL(res.body.data.otpAuthUrl).searchParams.get('secret'), res.body.data.secret);
+      assert.match(res.body.data.qrCodeDataUrl, /^data:image\/png;base64,/);
+      const qrPng = Buffer.from(res.body.data.qrCodeDataUrl.split(',')[1], 'base64');
+      assert.deepStrictEqual(qrPng.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      assert.ok(qrPng.length > 100, 'QR code must contain a generated PNG image');
       mfaSecret = res.body.data.secret;
     });
 

@@ -21,6 +21,8 @@ const {
   verifyMfaSchema,
   disableMfaSchema,
   requestStepUpOtpSchema,
+  requestEmailVerificationOtpSchema,
+  verifyEmailVerificationSchema,
   verifyStepUpSchema,
 } = require('../validators/auth.validator');
 
@@ -39,6 +41,8 @@ router.post('/mfa/login-step2', authLimiter, validate(mfaLoginStep2Schema), auth
 
 // Protected routes requiring valid JWT access token
 router.get('/me', authenticate, authController.getMe);
+router.post('/email/verification/otp', authLimiter, authenticate, validate(requestEmailVerificationOtpSchema), authController.requestEmailVerificationOtp);
+router.post('/email/verification/verify', authLimiter, authenticate, validate(verifyEmailVerificationSchema), authController.verifyEmail);
 router.post('/security/otp', authLimiter, authenticate, validate(requestStepUpOtpSchema), authController.requestStepUpOtp);
 router.post('/security/verify', authLimiter, authenticate, validate(verifyStepUpSchema), authController.verifyStepUp);
 router.post('/change-password', authenticate, requireStepUp('password_change'), validate(changePasswordSchema), authController.changePassword);

@@ -1,14 +1,26 @@
 services:
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
   api:
     build:
       context: .
       dockerfile: Dockerfile
     command: ["sh", "-c", "npm run seed && npm run dev"]
+    depends_on:
+      - mailpit
     env_file:
       - .env
     environment:
       HOST: 0.0.0.0
       DATA_DIR: /app/data
+      SMTP_HOST: "${SMTP_HOST:-mailpit}"
+      SMTP_PORT: "${SMTP_PORT:-1025}"
+      SMTP_SECURE: "${SMTP_SECURE:-false}"
+      SMTP_FROM: "${SMTP_FROM:-noreply@example.com}"
     ports:
       - "5000:5000"
     volumes:

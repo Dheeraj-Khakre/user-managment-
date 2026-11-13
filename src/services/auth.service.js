@@ -7,6 +7,7 @@
 
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const QRCode = require('qrcode');
 const userRepository = require('../repositories/user.repository');
 const tokenRepository = require('../repositories/token.repository');
 const tokenService = require('./token.service');
@@ -203,7 +204,7 @@ class AuthService {
   /**
    * Generates a new MFA secret and setup URL for the authenticated user.
    * @param {string} userId
-   * @returns {Promise<{ secret: string, otpAuthUrl: string }>}
+   * @returns {Promise<{ secret: string, otpAuthUrl: string, qrCodeDataUrl: string }>}
    */
   async setupMfa(userId) {
     const user = await userRepository.findById(userId);
@@ -216,14 +217,19 @@ class AuthService {
     }
 
     const secret = totpUtil.generateSecret();
-    await userRepository.setMfaSecret(userId, secret);
-
     const otpAuthUrl = totpUtil.getOtpAuthUrl(user.email, secret);
+    const qrCodeDataUrl = await QRCode.toDataURL(otpAuthUrl, {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 256,
+    });
+    await userRepository.setMfaSecret(userId, secret);
     logger.info(`MFA setup initiated for user [${userId}]`);
 
     return {
       secret,
       otpAuthUrl,
+      qrCodeDataUrl,
     };
   }
 
